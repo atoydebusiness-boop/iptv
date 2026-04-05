@@ -257,7 +257,7 @@ export default function Player() {
       return;
     }
 
-    setError(reason || 'Esse item falhou. Não vamos trocar automaticamente para evitar pular canal.');
+    setError(reason || 'Esse item falhou. Selecione outro canal manualmente.');
   };
 
   useEffect(() => {
