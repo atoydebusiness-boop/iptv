@@ -14,58 +14,27 @@ export default function Player() {
   const [error, setError] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
 
-  const m3uUrl = '/api/m3u';
+  const apiUrl = '/api/channels';
 
   useEffect(() => {
-    loadPlaylist(m3uUrl);
+    loadChannels();
   }, []);
 
-  const parseM3U = (content: string) => {
-    const lines = content.split('\n');
-    const parsedChannels: Channel[] = [];
-    let currentName = '';
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (!line) continue;
-
-      if (line.startsWith('#EXTINF:')) {
-        // Try to find tvg-name or the name after the last comma
-        const tvgNameMatch = line.match(/tvg-name="([^"]+)"/);
-        const commaMatch = line.match(/,(.*)$/);
-        
-        if (tvgNameMatch && tvgNameMatch[1]) {
-          currentName = tvgNameMatch[1];
-        } else if (commaMatch && commaMatch[1]) {
-          currentName = commaMatch[1].trim();
-        } else {
-          currentName = 'Canal Sem Nome';
-        }
-      } else if (line.startsWith('http')) {
-        parsedChannels.push({
-          name: currentName || 'Canal Sem Nome',
-          url: line
-        });
-        currentName = '';
-      }
-    }
-    return parsedChannels;
-  };
-
-  const loadPlaylist = async (url: string) => {
+  const loadChannels = async () => {
     setLoading(true);
     setError('');
     try {
-      // Fetching from our local API proxy to avoid CORS
-      const response = await fetch(url);
-      if (!response.ok) throw new Error('Falha ao carregar a lista via proxy.');
-      const content = await response.text();
-      const parsed = parseM3U(content);
-      if (parsed.length === 0) throw new Error('Nenhum canal encontrado nesta lista.');
-      setChannels(parsed);
-      setCurrentChannel(parsed[0]);
+      const response = await fetch(apiUrl);
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.details || 'Falha ao carregar canais do servidor.');
+      }
+      const data = await response.json();
+      if (data.length === 0) throw new Error('Nenhum canal disponível no momento.');
+      setChannels(data);
+      setCurrentChannel(data[0]);
     } catch (err: any) {
-      setError('Erro ao carregar a lista de canais. Por favor, tente novamente mais tarde ou contate o suporte.');
+      setError(`Erro: ${err.message}. Verifique se sua lista está ativa ou tente novamente.`);
       console.error(err);
     } finally {
       setLoading(false);
@@ -75,6 +44,8 @@ export default function Player() {
   const filteredChannels = channels.filter(c => 
     c.name.toLowerCase().includes(searchTerm.toLowerCase())
   );
+
+  const PlayerComponent = ReactPlayer as any;
 
   return (
     <section id="player" className="py-20 bg-zinc-950">
@@ -93,7 +64,7 @@ export default function Player() {
                   <p className="text-gray-400 animate-pulse">Carregando canais...</p>
                 </div>
               ) : currentChannel ? (
-                <ReactPlayer
+                <PlayerComponent
                   url={currentChannel.url}
                   controls
                   width="100%"
@@ -107,7 +78,7 @@ export default function Player() {
                       }
                     }
                   }}
-                  onError={(e) => {
+                  onError={(e: any) => {
                     console.error('Player Error:', e);
                     setError('Erro ao reproduzir este canal. Tente outro canal ou use um player externo.');
                   }}

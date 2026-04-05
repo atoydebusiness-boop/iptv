@@ -6,27 +6,79 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+interface Channel {
+  name: string;
+  url: string;
+}
+
+function parseM3U(content: string): Channel[] {
+  const lines = content.split(/\r?\n/);
+  const channels: Channel[] = [];
+  let currentName = "";
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+
+    if (line.startsWith("#EXTINF:")) {
+      const tvgNameMatch = line.match(/tvg-name="([^"]+)"/);
+      const commaMatch = line.match(/,(.*)$/);
+      if (tvgNameMatch && tvgNameMatch[1]) {
+        currentName = tvgNameMatch[1];
+      } else if (commaMatch && commaMatch[1]) {
+        currentName = commaMatch[1].trim();
+      } else {
+        currentName = "Canal Sem Nome";
+      }
+    } else if (line.startsWith("http")) {
+      channels.push({
+        name: currentName || "Canal Sem Nome",
+        url: line,
+      });
+      currentName = "";
+    }
+    // Limit to 500 channels for the web preview to ensure fast loading
+    if (channels.length >= 500) break;
+  }
+  return channels;
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // API route to proxy M3U fetch and avoid CORS issues
-  app.get("/api/m3u", async (req, res) => {
-    const m3uUrl = 'http://dnsnexplay.shop/get.php?username=98765683&password=49673688&type=m3u_plus&output=mpegts';
+  // API route to proxy and parse M3U
+  app.get("/api/channels", async (req, res) => {
+    // Changed output to m3u8 for better browser compatibility
+    const m3uUrl = 'http://dnsnexplay.shop/get.php?username=98765683&password=49673688&type=m3u_plus&output=m3u8';
+    
     try {
+      console.log("Fetching M3U from IPTV server...");
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
+
       const response = await fetch(m3uUrl, {
+        signal: controller.signal,
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36',
           'Accept': '*/*'
         }
       });
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      
+      clearTimeout(timeout);
+
+      if (!response.ok) throw new Error(`IPTV Server returned ${response.status}`);
+      
       const content = await response.text();
-      res.header("Content-Type", "text/plain; charset=utf-8");
-      res.send(content);
-    } catch (error) {
-      console.error("Error proxying M3U:", error);
-      res.status(500).json({ error: "Failed to fetch M3U playlist" });
+      console.log(`M3U fetched successfully (${content.length} bytes)`);
+      
+      const channels = parseM3U(content);
+      console.log(`Parsed ${channels.length} channels`);
+      
+      res.json(channels);
+    } catch (error: any) {
+      console.error("Error proxying M3U:", error.message);
+      res.status(500).json({ error: "Failed to fetch channels", details: error.message });
     }
   });
 
