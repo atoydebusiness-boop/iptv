@@ -59,22 +59,51 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  const buildCandidateUrls = () => {
-    const customUrl = process.env.IPTV_M3U_URL?.trim();
-    if (customUrl) return [customUrl];
+  const DEFAULT_IPTV_URL =
+    "http://dnsnexplay.shop/get.php?username=66645868&password=56348969&type=m3u_plus&output=mpegts";
 
-    const base = "dnsnexplay.shop/get.php?username=98765683&password=49673688&type=m3u_plus";
-    return [
-      `https://${base}&output=m3u8`,
-      `https://${base}&output=ts`,
-      `http://${base}&output=m3u8`,
-      `http://${base}&output=ts`,
-    ];
+  const sanitizeUrl = (value: string) =>
+    value
+      .replace(/\n/g, "")
+      .replace(/\r/g, "")
+      .trim();
+
+  const buildCandidateUrls = () => {
+    const rawUrl = process.env.IPTV_M3U_URL || DEFAULT_IPTV_URL;
+    const cleaned = sanitizeUrl(rawUrl);
+
+    if (!cleaned) return [];
+
+    const candidates = new Set<string>();
+
+    const addUrlVariants = (urlValue: string) => {
+      try {
+        const parsed = new URL(urlValue.startsWith("http") ? urlValue : `http://${urlValue}`);
+
+        const output = (parsed.searchParams.get("output") || "").toLowerCase();
+        const outputs = output
+          ? [output, "mpegts", "ts", "m3u8"]
+          : ["mpegts", "ts", "m3u8"];
+
+        for (const protocol of ["http:", "https:"]) {
+          for (const out of outputs) {
+            parsed.protocol = protocol;
+            parsed.searchParams.set("output", out);
+            candidates.add(parsed.toString());
+          }
+        }
+      } catch {
+        candidates.add(urlValue);
+      }
+    };
+
+    addUrlVariants(cleaned);
+    return [...candidates];
   };
 
   const isLikelyNotFoundPage = (content: string) => {
     const normalized = content.toLowerCase();
-    return normalized.includes("not_found") || normalized.includes("the page could not be found");
+    return normalized.includes("not_found") || normalized.includes("the page could not be found") || normalized.includes("gru1::");
   };
 
   // API route to proxy and parse M3U
@@ -83,9 +112,11 @@ async function startServer() {
       console.log("Fetching M3U from IPTV server...");
       const candidateUrls = buildCandidateUrls();
       let lastError = "Falha ao buscar a lista M3U.";
+      let lastTriedUrl = "";
       let content = "";
 
       for (const url of candidateUrls) {
+        lastTriedUrl = url;
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
 
@@ -102,15 +133,15 @@ async function startServer() {
 
           const responseText = await response.text();
           if (!response.ok) {
-            lastError = `IPTV Server returned ${response.status}`;
+            lastError = `IPTV Server returned ${response.status} para ${url}`;
             continue;
           }
           if (isLikelyNotFoundPage(responseText)) {
-            lastError = "Servidor respondeu página NOT_FOUND para a URL da lista.";
+            lastError = `Servidor respondeu NOT_FOUND para ${url}.`;
             continue;
           }
           if (!responseText.includes("#EXTM3U")) {
-            lastError = "Resposta inválida do provedor (não retornou M3U).";
+            lastError = `Resposta inválida do provedor em ${url} (não retornou M3U).`;
             continue;
           }
 
@@ -119,10 +150,10 @@ async function startServer() {
           break;
         } catch (fetchError: any) {
           clearTimeout(timeout);
-          lastError = fetchError?.message || "Erro de rede ao buscar M3U.";
+          lastError = fetchError?.message || `Erro de rede ao buscar M3U em ${url}.`;
         }
       }
-      if (!content) throw new Error(lastError);
+      if (!content) throw new Error(`${lastError}${lastTriedUrl ? ` Última tentativa: ${lastTriedUrl}` : ""}`);
 
       const channels = parseM3U(content);
       if (channels.length === 0) {
