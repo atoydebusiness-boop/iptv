@@ -1,0 +1,39 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="630" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#020617"/>
+      <stop offset="1" stop-color="#0F172A"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="230" y1="140" x2="980" y2="500" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1D4ED8"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+    <filter id="blur" x="150" y="40" width="900" height="550" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="45"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <ellipse cx="620" cy="290" rx="350" ry="170" fill="url(#accent)" opacity="0.38" filter="url(#blur)"/>
+  <rect x="80" y="80" width="1040" height="470" rx="34" fill="#0B1222" stroke="#334155" stroke-opacity="0.8"/>
+  <rect x="120" y="140" width="150" height="150" rx="30" fill="url(#accent)"/>
+
+  <text x="320" y="200" fill="#E2E8F0" font-size="64" font-weight="700" font-family="Inter, Arial, sans-serif">
+    UltraStream IPTV
+  </text>
+  <text x="320" y="252" fill="#93C5FD" font-size="30" font-weight="600" font-family="Inter, Arial, sans-serif">
+    Web Player M3U • Ao Vivo • Filmes • Séries
+  </text>
+
+  <rect x="320" y="305" width="315" height="62" rx="14" fill="#1D4ED8"/>
+  <text x="347" y="347" fill="white" font-size="30" font-weight="700" font-family="Inter, Arial, sans-serif">
+    Teste na hora
+  </text>
+
+  <text x="120" y="475" fill="#CBD5E1" font-size="30" font-weight="500" font-family="Inter, Arial, sans-serif">
+    Estável, rápido e pronto para compartilhar no WhatsApp
+  </text>
+  <text x="120" y="520" fill="#64748B" font-size="24" font-weight="500" font-family="Inter, Arial, sans-serif">
+    ultrastream.app
+  </text>
+</svg>
