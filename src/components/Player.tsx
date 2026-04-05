@@ -67,6 +67,20 @@ const buildPlayableCandidates = (url: string) => {
     addWithProtocolVariants(url.replace(/\.ts(\?.*)?$/i, '.m3u8$1'));
   }
 
+  if (normalized.includes('/movie/') || normalized.includes('/series/')) {
+    const withExt = (ext: string) => {
+      if (/\.[a-z0-9]+(\?.*)?$/i.test(url)) {
+        addWithProtocolVariants(url.replace(/\.[a-z0-9]+(\?.*)?$/i, `.${ext}$1`));
+      } else {
+        addWithProtocolVariants(`${url}.${ext}`);
+      }
+    };
+
+    withExt('m3u8');
+    withExt('mp4');
+    withExt('ts');
+  }
+
   return [...candidates];
 };
 
