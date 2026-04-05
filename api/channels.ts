@@ -203,7 +203,7 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
         name: item.name?.trim() || `Série ${item.series_id}`,
         group: item.category_name?.trim() || "Séries",
         type: "series",
-        url: `${baseUrl}/series/${username}/${password}/${item.series_id}.m3u8`,
+        url: `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_series_info&series_id=${encodeURIComponent(String(item.series_id))}`,
       });
     }
   }
