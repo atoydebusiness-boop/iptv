@@ -13,6 +13,115 @@ interface Channel {
   type?: "live" | "movie" | "series" | "unknown";
 }
 
+interface XtreamCredentials {
+  baseUrl: string;
+  username: string;
+  password: string;
+}
+
+function extractXtreamCredentials(rawUrl: string): XtreamCredentials | null {
+  try {
+    const parsed = new URL(rawUrl.startsWith("http") ? rawUrl : `http://${rawUrl}`);
+    const username = parsed.searchParams.get("username")?.trim();
+    const password = parsed.searchParams.get("password")?.trim();
+
+    if (!username || !password) return null;
+
+    return {
+      baseUrl: `${parsed.protocol}//${parsed.host}`,
+      username,
+      password,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchXtreamJson<T>(url: string, timeoutMs = 15000): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        Accept: "application/json,text/plain,*/*",
+        "Cache-Control": "no-cache",
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Xtream API retornou ${response.status}`);
+    }
+
+    const text = await response.text();
+    const trimmed = text.trim();
+    if (!trimmed) throw new Error("Xtream API retornou vazio.");
+
+    try {
+      return JSON.parse(trimmed) as T;
+    } catch {
+      throw new Error("Xtream API não retornou JSON válido.");
+    }
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function buildChannelsFromXtream(rawUrl: string): Promise<Channel[]> {
+  const creds = extractXtreamCredentials(rawUrl);
+  if (!creds) throw new Error("URL não contém credenciais Xtream válidas.");
+
+  const { baseUrl, username, password } = creds;
+  const liveUrl = `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_live_streams`;
+  const vodUrl = `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_vod_streams`;
+
+  type LiveItem = { name?: string; stream_id?: number | string; category_name?: string };
+  type VodItem = { name?: string; stream_id?: number | string; category_name?: string; container_extension?: string };
+
+  const [liveItems, vodItems] = await Promise.allSettled([
+    fetchXtreamJson<LiveItem[]>(liveUrl),
+    fetchXtreamJson<VodItem[]>(vodUrl),
+  ]);
+
+  const channels: Channel[] = [];
+
+  if (liveItems.status === "fulfilled" && Array.isArray(liveItems.value)) {
+    for (const item of liveItems.value) {
+      if (!item?.stream_id) continue;
+      channels.push({
+        name: item.name?.trim() || `Live ${item.stream_id}`,
+        group: item.category_name?.trim() || "Ao vivo",
+        type: "live",
+        url: `${baseUrl}/live/${username}/${password}/${item.stream_id}.ts`,
+      });
+    }
+  }
+
+  if (vodItems.status === "fulfilled" && Array.isArray(vodItems.value)) {
+    for (const item of vodItems.value) {
+      if (!item?.stream_id) continue;
+      const ext = (item.container_extension || "mp4").replace(/[^a-z0-9]/gi, "") || "mp4";
+      channels.push({
+        name: item.name?.trim() || `Filme ${item.stream_id}`,
+        group: item.category_name?.trim() || "Filmes",
+        type: "movie",
+        url: `${baseUrl}/movie/${username}/${password}/${item.stream_id}.${ext}`,
+      });
+    }
+  }
+
+  if (channels.length === 0) {
+    const liveErr = liveItems.status === "rejected" ? liveItems.reason?.message || String(liveItems.reason) : "ok";
+    const vodErr = vodItems.status === "rejected" ? vodItems.reason?.message || String(vodItems.reason) : "ok";
+    throw new Error(`Fallback Xtream sem itens. live=${liveErr}; vod=${vodErr}`);
+  }
+
+  return channels;
+}
+
 function parseM3U(content: string): Channel[] {
   const lines = content.split(/\r?\n/);
   const channels: Channel[] = [];
@@ -153,15 +262,21 @@ async function startServer() {
           lastError = fetchError?.message || `Erro de rede ao buscar M3U em ${url}.`;
         }
       }
-      if (!content) throw new Error(`${lastError}${lastTriedUrl ? ` Última tentativa: ${lastTriedUrl}` : ""}`);
-
-      const channels = parseM3U(content);
-      if (channels.length === 0) {
-        throw new Error("Lista retornada sem itens reproduzíveis.");
+      if (content) {
+        const channels = parseM3U(content);
+        if (channels.length > 0) {
+          console.log(`Parsed ${channels.length} channels`);
+          res.json(channels);
+          return;
+        }
       }
-      console.log(`Parsed ${channels.length} channels`);
-      
-      res.json(channels);
+
+      const fallbackUrl = process.env.IPTV_M3U_URL || DEFAULT_IPTV_URL;
+      const m3uFailureContext = `${lastError}${lastTriedUrl ? ` Última tentativa: ${lastTriedUrl}` : ""}`;
+      console.warn(`M3U fetch falhou (${m3uFailureContext}). Tentando fallback Xtream API: ${fallbackUrl}`);
+      const fallbackChannels = await buildChannelsFromXtream(sanitizeUrl(fallbackUrl));
+      console.log(`Fallback Xtream retornou ${fallbackChannels.length} itens`);
+      res.json(fallbackChannels);
     } catch (error: any) {
       console.error("Error proxying M3U:", error.message);
       res.status(500).json({ error: "Failed to fetch channels", details: error.message });
