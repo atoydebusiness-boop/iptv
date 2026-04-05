@@ -32,7 +32,10 @@ export default function Player() {
       const data = await response.json();
       if (data.length === 0) throw new Error('Nenhum canal disponível no momento.');
       setChannels(data);
-      setCurrentChannel(data[0]);
+      const preferredGloboChannel = data.find((channel: Channel) =>
+        channel.name.toLowerCase().includes('globo')
+      );
+      setCurrentChannel(preferredGloboChannel || data[0]);
     } catch (err: any) {
       setError(`Erro: ${err.message}. Verifique se sua lista está ativa ou tente novamente.`);
       console.error(err);
@@ -70,6 +73,7 @@ export default function Player() {
                   width="100%"
                   height="100%"
                   playing
+                  muted
                   config={{
                     file: {
                       forceHLS: true,
@@ -105,7 +109,7 @@ export default function Player() {
               </h4>
               <p className="text-sm text-gray-400 leading-relaxed">
                 Nossa lista oficial está carregada. Se algum canal não abrir, pode ser devido a restrições do navegador. 
-                Recomendamos o uso de aplicativos próprios para Smart TV ou TV Box para a melhor experiência.
+                O player inicia no Globo quando disponível e começa sem áudio para permitir autoplay no navegador.
               </p>
             </div>
           </div>

@@ -37,8 +37,6 @@ function parseM3U(content: string): Channel[] {
       });
       currentName = "";
     }
-    // Limit to 500 channels for the web preview to ensure fast loading
-    if (channels.length >= 500) break;
   }
   return channels;
 }
