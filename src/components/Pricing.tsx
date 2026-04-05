@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Check, Copy, Smartphone, Monitor, Tv, Laptop } from 'lucide-react';
+import React from 'react';
+import { Check, MessageCircle, Smartphone, Monitor, Tv } from 'lucide-react';
 
 const plans = [
   {
@@ -26,14 +26,7 @@ const plans = [
 ];
 
 export default function Pricing() {
-  const [copied, setCopied] = useState(false);
-  const pixKey = "33504313000136";
-
-  const copyPix = () => {
-    navigator.clipboard.writeText(pixKey);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
+  const whatsappUrl = 'https://wa.me/5561993099265?text=Olá! Quero assinar agora, me passa os dados para pagamento.';
 
   return (
     <section id="pricing" className="py-20">
@@ -91,26 +84,21 @@ export default function Pricing() {
         <div className="bg-zinc-900 border border-white/10 rounded-3xl p-8 md:p-12">
           <div className="grid md:grid-cols-2 gap-12 items-center">
             <div>
-              <h3 className="text-3xl font-bold mb-6">Pagamento via PIX</h3>
+              <h3 className="text-3xl font-bold mb-6">Ativação via WhatsApp</h3>
               <p className="text-gray-400 mb-8 leading-relaxed">
-                Para agilizar sua ativação, realize o pagamento via PIX e envie o comprovante 
-                para nosso WhatsApp. Nossa equipe fará a liberação em poucos minutos.
+                Removemos o QR Code e a chave PIX da página. Agora o pagamento e a ativação são tratados direto no WhatsApp para facilitar.
               </p>
               
               <div className="space-y-4">
-                <div className="bg-black/50 border border-white/10 p-4 rounded-2xl flex items-center justify-between">
-                  <div>
-                    <p className="text-xs text-gray-500 uppercase font-bold mb-1">Chave PIX (CNPJ)</p>
-                    <p className="font-mono text-lg">{pixKey}</p>
-                  </div>
-                  <button 
-                    onClick={copyPix}
-                    className="p-3 bg-white/5 hover:bg-white/10 rounded-xl transition-all text-blue-400"
-                    title="Copiar Chave"
-                  >
-                    {copied ? <Check className="w-5 h-5 text-green-500" /> : <Copy className="w-5 h-5" />}
-                  </button>
-                </div>
+                <a
+                  href={whatsappUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full inline-flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-2xl transition-all"
+                >
+                  <MessageCircle className="w-5 h-5" />
+                  Pedir no WhatsApp (61) 99309-9265
+                </a>
                 
                 <div className="flex items-center gap-4 text-sm text-gray-400">
                   <div className="flex -space-x-2">
@@ -123,14 +111,12 @@ export default function Pricing() {
               </div>
             </div>
             
-            <div className="flex flex-col items-center justify-center p-8 bg-white rounded-2xl">
-              <img 
-                src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${pixKey}`} 
-                alt="QR Code PIX"
-                className="w-48 h-48 mb-4"
-              />
-              <p className="text-black font-bold text-sm">Escaneie para pagar</p>
-              <p className="text-gray-500 text-xs mt-1">UltraStream Services LTDA</p>
+            <div className="flex flex-col items-center justify-center p-8 bg-black/40 border border-white/10 rounded-2xl">
+              <MessageCircle className="w-16 h-16 text-green-500 mb-4" />
+              <p className="font-bold text-lg text-white">Pagamento direto no atendimento</p>
+              <p className="text-gray-400 text-sm mt-2 text-center">
+                Chama no WhatsApp e a equipe já te passa os dados de pagamento e libera seu acesso.
+              </p>
             </div>
           </div>
         </div>
