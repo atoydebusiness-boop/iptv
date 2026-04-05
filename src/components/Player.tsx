@@ -79,6 +79,7 @@ export default function Player() {
   const [activeTab, setActiveTab] = useState<ContentTab>('all');
   const [visibleCount, setVisibleCount] = useState(VISIBLE_PAGE_SIZE);
   const [playbackCandidateIndex, setPlaybackCandidateIndex] = useState(0);
+  const [loadedTypes, setLoadedTypes] = useState<Set<ContentTab>>(new Set(['all']));
 
   const apiUrl = '/api/channels';
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -107,13 +108,14 @@ export default function Player() {
     loadChannels();
   }, []);
 
-  const loadChannels = async () => {
+  const loadChannels = async (requestedType: ContentTab = "all") => {
     setLoading(true);
     setError('');
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 20000);
-      const response = await fetch(apiUrl, { cache: 'no-store', signal: controller.signal });
+      const targetUrl = `${apiUrl}?type=${requestedType}`;
+      const response = await fetch(targetUrl, { cache: 'no-store', signal: controller.signal });
       clearTimeout(timeout);
       if (!response.ok) {
         const errorRaw = await response.text();
@@ -133,9 +135,14 @@ export default function Player() {
       }
 
       const normalizedData = normalizeChannels(data);
-      setChannels(normalizedData);
-      setInitialChannel(normalizedData);
-      localStorage.setItem(CHANNEL_CACHE_KEY, JSON.stringify(normalizedData.slice(0, 5000)));
+      setChannels((prev) => {
+        const merged = requestedType === 'all' ? normalizedData : [...prev, ...normalizedData];
+        const deduped = Array.from(new Map(merged.map((item) => [item.url, item])).values());
+        setInitialChannel(deduped);
+        localStorage.setItem(CHANNEL_CACHE_KEY, JSON.stringify(deduped.slice(0, 5000)));
+        return deduped;
+      });
+      setLoadedTypes((prev) => new Set(prev).add(requestedType));
     } catch (err: any) {
       const message = err?.name === 'AbortError' ? 'Timeout ao carregar lista do servidor.' : err.message;
       setError(`Erro: ${message}. Verifique se sua lista está ativa ou tente novamente.`);
@@ -146,6 +153,12 @@ export default function Player() {
   };
 
   const searchNormalized = normalize(searchTerm.trim());
+
+  useEffect(() => {
+    if (activeTab !== 'all' && !loadedTypes.has(activeTab)) {
+      loadChannels(activeTab);
+    }
+  }, [activeTab]);
 
   const filteredChannels = useMemo(() => {
     return channels.filter((channel) => {
@@ -328,7 +341,7 @@ export default function Player() {
                 ] as Array<{ id: ContentTab; label: string }>).map((tab) => (
                   <button
                     key={tab.id}
-                    onClick={() => setActiveTab(tab.id)}
+                    onClick={() => { setActiveTab(tab.id); setError(''); }}
                     className={`text-xs py-2 rounded-lg transition-colors ${
                       activeTab === tab.id
                         ? 'bg-blue-600 text-white'

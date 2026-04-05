@@ -11,6 +11,8 @@ interface XtreamCredentials {
   password: string;
 }
 
+type RequestedType = 'all' | 'live' | 'movie' | 'series';
+
 const DEFAULT_IPTV_URL =
   "http://dnsnexplay.shop/get.php?username=66645868&password=56348969&type=m3u_plus&output=hls";
 
@@ -53,6 +55,22 @@ function parseM3U(content: string): Channel[] {
   }
 
   return channels;
+}
+
+
+function detectChannelType(channel: Channel): Exclude<Channel['type'], 'unknown'> | 'unknown' {
+  if (channel.type && channel.type !== 'unknown') return channel.type;
+
+  const haystack = `${channel.name || ''} ${channel.group || ''} ${channel.url || ''}`.toLowerCase();
+  if (haystack.includes('/series/') || haystack.includes('series') || haystack.includes('temporada')) return 'series';
+  if (haystack.includes('/movie/') || haystack.includes('filme') || haystack.includes('vod')) return 'movie';
+  if (haystack.includes('/live/') || haystack.includes('ao vivo') || haystack.includes('canal')) return 'live';
+  return 'unknown';
+}
+
+function filterByRequestedType(channels: Channel[], requestedType: RequestedType): Channel[] {
+  if (requestedType === 'all') return channels;
+  return channels.filter((channel) => detectChannelType(channel) === requestedType);
 }
 
 function buildCandidateUrls(rawUrl: string): string[] {
@@ -127,7 +145,7 @@ async function fetchXtreamJson<T>(url: string, timeoutMs = 7000): Promise<T> {
   }
 }
 
-async function buildChannelsFromXtream(rawUrl: string): Promise<Channel[]> {
+async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedType): Promise<Channel[]> {
   const creds = extractXtreamCredentials(rawUrl);
   if (!creds) throw new Error("URL não contém credenciais Xtream válidas.");
 
@@ -140,10 +158,14 @@ async function buildChannelsFromXtream(rawUrl: string): Promise<Channel[]> {
   type VodItem = { name?: string; stream_id?: string | number; category_name?: string; container_extension?: string };
   type SeriesItem = { name?: string; series_id?: string | number; category_name?: string };
 
+  const shouldLoadLive = requestedType === 'all' || requestedType === 'live';
+  const shouldLoadVod = requestedType === 'all' || requestedType === 'movie';
+  const shouldLoadSeries = requestedType === 'all' || requestedType === 'series';
+
   const [liveItems, vodItems, seriesItems] = await Promise.allSettled([
-    fetchXtreamJson<LiveItem[]>(liveUrl),
-    fetchXtreamJson<VodItem[]>(vodUrl),
-    fetchXtreamJson<SeriesItem[]>(seriesUrl),
+    shouldLoadLive ? fetchXtreamJson<LiveItem[]>(liveUrl) : Promise.resolve([] as LiveItem[]),
+    shouldLoadVod ? fetchXtreamJson<VodItem[]>(vodUrl) : Promise.resolve([] as VodItem[]),
+    shouldLoadSeries ? fetchXtreamJson<SeriesItem[]>(seriesUrl) : Promise.resolve([] as SeriesItem[]),
   ]);
 
   const channels: Channel[] = [];
@@ -196,7 +218,7 @@ async function buildChannelsFromXtream(rawUrl: string): Promise<Channel[]> {
   return channels;
 }
 
-async function resolveChannels(sourceUrl: string): Promise<Channel[]> {
+async function resolveChannels(sourceUrl: string, requestedType: RequestedType): Promise<Channel[]> {
   const candidateUrls = buildCandidateUrls(sourceUrl);
   let lastError = "Falha ao buscar a lista M3U.";
   let lastTriedUrl = "";
@@ -232,7 +254,7 @@ async function resolveChannels(sourceUrl: string): Promise<Channel[]> {
         continue;
       }
 
-      const channels = parseM3U(responseText);
+      const channels = filterByRequestedType(parseM3U(responseText), requestedType);
       if (channels.length > 0) return channels;
       lastError = `M3U sem itens reproduzíveis em ${url}.`;
     } catch (err: any) {
@@ -245,7 +267,7 @@ async function resolveChannels(sourceUrl: string): Promise<Channel[]> {
   const failureContext = `${lastError}${lastTriedUrl ? ` | Última tentativa: ${lastTriedUrl}` : ""}`;
   console.warn(`M3U falhou: ${failureContext}. Tentando Xtream API...`);
 
-  return buildChannelsFromXtream(sourceUrl);
+  return buildChannelsFromXtream(sourceUrl, requestedType);
 }
 
 export default async function handler(req: any, res: any) {
@@ -264,8 +286,12 @@ export default async function handler(req: any, res: any) {
   }
 
   try {
+    const requestedType = (["all", "live", "movie", "series"].includes(String(req.query?.type || "all"))
+      ? String(req.query?.type || "all")
+      : "all") as RequestedType;
+
     const sourceUrl = sanitizeUrl(process.env.IPTV_M3U_URL || DEFAULT_IPTV_URL);
-    const channels = await resolveChannels(sourceUrl);
+    const channels = await resolveChannels(sourceUrl, requestedType);
     res.status(200).json(channels);
   } catch (error: any) {
     res.status(500).json({
