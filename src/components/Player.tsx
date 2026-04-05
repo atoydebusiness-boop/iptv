@@ -217,9 +217,16 @@ export default function Player() {
   };
 
   const handlePlaybackError = (reason?: string) => {
+    const isVodLike = currentChannel?.type === 'movie' || currentChannel?.type === 'series';
+
     if (playbackCandidateIndex + 1 < currentPlaybackCandidates.length) {
       setPlaybackCandidateIndex((prev) => prev + 1);
       setError('Tentando formato alternativo do mesmo item...');
+      return;
+    }
+
+    if (isVodLike) {
+      setError(reason || 'Não foi possível reproduzir este item. Tente outro filme/série da lista.');
       return;
     }
 
@@ -306,6 +313,9 @@ export default function Player() {
                   muted
                   playsInline
                   className="w-full h-full bg-black"
+                  onLoadedData={() => {
+                    setError('');
+                  }}
                   onError={() => {
                     console.error('Video Element Error:', directPlaybackUrl);
                     handlePlaybackError();
