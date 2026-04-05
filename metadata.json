@@ -1,0 +1,5 @@
+{
+  "name": "UltraStream IPTV",
+  "description": "Plataforma de streaming para listas M3U com suporte 24h e ativação via PIX.",
+  "requestFramePermissions": []
+}
