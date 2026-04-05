@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import ReactPlayer from 'react-player';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import Hls from 'hls.js';
 import { Play, List, Search, AlertCircle, Zap } from 'lucide-react';
 
 interface Channel {
@@ -36,21 +36,6 @@ const inferTypeFromText = (channel: Channel): Channel['type'] => {
 
 const normalizeChannels = (items: Channel[]): Channel[] =>
   items.map((item) => ({ ...item, type: inferTypeFromText(item) }));
-
-const getPlayerConfig = (url: string) => {
-  const normalized = normalize(url);
-  const isHls = normalized.includes('.m3u8') || normalized.includes('m3u8');
-
-  return {
-    file: {
-      forceHLS: isHls,
-      forceVideo: true,
-      attributes: {
-        crossOrigin: 'anonymous',
-      },
-    },
-  };
-};
 
 const buildPlayableCandidates = (url: string) => {
   const candidates = new Set<string>();
@@ -91,6 +76,8 @@ export default function Player() {
   const [playbackCandidateIndex, setPlaybackCandidateIndex] = useState(0);
 
   const apiUrl = '/api/channels';
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const hlsRef = useRef<Hls | null>(null);
 
   const setInitialChannel = (list: Channel[]) => {
     const preferredGloboChannel = list.find((channel) => normalize(channel.name).includes('globo'));
@@ -192,7 +179,71 @@ export default function Player() {
     }
   };
 
-  const PlayerComponent = ReactPlayer as any;
+  const handlePlaybackError = (reason?: string) => {
+    if (playbackCandidateIndex + 1 < currentPlaybackCandidates.length) {
+      setPlaybackCandidateIndex((prev) => prev + 1);
+      setError('Tentando formato alternativo do mesmo item...');
+      return;
+    }
+
+    jumpToNextChannel();
+    setError(reason || 'Esse item falhou. Trocamos automaticamente para o próximo da lista.');
+  };
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !playbackUrl) return;
+
+    if (hlsRef.current) {
+      hlsRef.current.destroy();
+      hlsRef.current = null;
+    }
+
+    const normalized = playbackUrl.toLowerCase();
+    const isHlsSource = normalized.includes('.m3u8') || normalized.includes('m3u8');
+
+    const playVideo = () => {
+      video
+        .play()
+        .catch(() => {
+          // autoplay pode falhar dependendo do navegador/política.
+        });
+    };
+
+    if (isHlsSource && Hls.isSupported()) {
+      const hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: true,
+      });
+      hlsRef.current = hls;
+      hls.loadSource(playbackUrl);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        playVideo();
+      });
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (data.fatal) {
+          handlePlaybackError('Erro no stream HLS. Tentando próximo item...');
+        }
+      });
+      return () => {
+        hls.destroy();
+        hlsRef.current = null;
+      };
+    }
+
+    video.src = playbackUrl;
+    playVideo();
+
+    return () => {
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
+      }
+      video.removeAttribute('src');
+      video.load();
+    };
+  }, [playbackUrl]);
 
   return (
     <section id="player" className="py-20 bg-zinc-950">
@@ -211,26 +262,16 @@ export default function Player() {
                   <p className="text-gray-400 animate-pulse">Carregando lista M3U...</p>
                 </div>
               ) : currentChannel ? (
-                <PlayerComponent
-                  url={playbackUrl}
+                <video
+                  ref={videoRef}
                   controls
-                  width="100%"
-                  height="100%"
-                  playing
+                  autoPlay
                   muted
-                  playsinline
-                  config={getPlayerConfig(playbackUrl)}
-                  onError={(e: any) => {
-                    console.error('Player Error:', e, playbackUrl);
-
-                    if (playbackCandidateIndex + 1 < currentPlaybackCandidates.length) {
-                      setPlaybackCandidateIndex((prev) => prev + 1);
-                      setError('Tentando formato alternativo do mesmo item...');
-                      return;
-                    }
-
-                    jumpToNextChannel();
-                    setError('Esse item falhou. Trocamos automaticamente para o próximo da lista.');
+                  playsInline
+                  className="w-full h-full bg-black"
+                  onError={() => {
+                    console.error('Video Element Error:', playbackUrl);
+                    handlePlaybackError();
                   }}
                 />
               ) : (
