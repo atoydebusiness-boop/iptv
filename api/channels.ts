@@ -63,9 +63,10 @@ function buildCandidateUrls(rawUrl: string): string[] {
   try {
     const parsed = new URL(cleaned.startsWith("http") ? cleaned : `http://${cleaned}`);
     const output = (parsed.searchParams.get("output") || "").toLowerCase();
-    const outputs = output ? [output, "hls", "m3u8", "mpegts", "ts"] : ["hls", "m3u8", "mpegts", "ts"];
+    const outputs = output ? [output, "m3u8", "mpegts"] : ["hls", "m3u8", "mpegts"];
+    const protocols = [parsed.protocol, parsed.protocol === "http:" ? "https:" : "http:"];
 
-    for (const protocol of ["http:", "https:"]) {
+    for (const protocol of protocols) {
       for (const out of outputs) {
         parsed.protocol = protocol;
         parsed.searchParams.set("output", out);
@@ -101,7 +102,7 @@ function extractXtreamCredentials(rawUrl: string): XtreamCredentials | null {
   }
 }
 
-async function fetchXtreamJson<T>(url: string, timeoutMs = 15000): Promise<T> {
+async function fetchXtreamJson<T>(url: string, timeoutMs = 7000): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -203,7 +204,7 @@ async function resolveChannels(sourceUrl: string): Promise<Channel[]> {
   for (const url of candidateUrls) {
     lastTriedUrl = url;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
+    const timeout = setTimeout(() => controller.abort(), 7000);
 
     try {
       const response = await fetch(url, {

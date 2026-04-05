@@ -106,7 +106,10 @@ export default function Player() {
     setLoading(true);
     setError('');
     try {
-      const response = await fetch(apiUrl, { cache: 'no-store' });
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 20000);
+      const response = await fetch(apiUrl, { cache: 'no-store', signal: controller.signal });
+      clearTimeout(timeout);
       if (!response.ok) {
         const errorRaw = await response.text();
         let errorMessage = 'Falha ao carregar lista do servidor.';
@@ -129,7 +132,8 @@ export default function Player() {
       setInitialChannel(normalizedData);
       localStorage.setItem(CHANNEL_CACHE_KEY, JSON.stringify(normalizedData.slice(0, 5000)));
     } catch (err: any) {
-      setError(`Erro: ${err.message}. Verifique se sua lista está ativa ou tente novamente.`);
+      const message = err?.name === 'AbortError' ? 'Timeout ao carregar lista do servidor.' : err.message;
+      setError(`Erro: ${message}. Verifique se sua lista está ativa ou tente novamente.`);
       console.error(err);
     } finally {
       setLoading(false);
