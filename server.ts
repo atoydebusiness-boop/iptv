@@ -386,10 +386,19 @@ async function startServer() {
         }
       }
       if (content) {
-        const channels = filterByRequestedType(parseM3U(content), requestedType);
+        const parsedChannels = parseM3U(content);
+        const channels = filterByRequestedType(parsedChannels, requestedType);
         if (channels.length > 0) {
           console.log(`Parsed ${channels.length} channels`);
           res.json(channels);
+          return;
+        }
+
+        if (requestedType !== "all" && parsedChannels.length > 0) {
+          console.log(
+            `Nenhum item classificado como ${requestedType}. Retornando lista completa (${parsedChannels.length}) para fallback no cliente.`,
+          );
+          res.json(parsedChannels);
           return;
         }
       }

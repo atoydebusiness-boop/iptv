@@ -254,8 +254,14 @@ async function resolveChannels(sourceUrl: string, requestedType: RequestedType):
         continue;
       }
 
-      const channels = filterByRequestedType(parseM3U(responseText), requestedType);
+      const parsedChannels = parseM3U(responseText);
+      const channels = filterByRequestedType(parsedChannels, requestedType);
       if (channels.length > 0) return channels;
+
+      if (requestedType !== "all" && parsedChannels.length > 0) {
+        return parsedChannels;
+      }
+
       lastError = `M3U sem itens reproduzíveis em ${url}.`;
     } catch (err: any) {
       lastError = err?.message || `Erro de rede ao buscar ${url}`;
