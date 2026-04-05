@@ -231,6 +231,72 @@ async function startServer() {
     return normalized.includes("not_found") || normalized.includes("the page could not be found") || normalized.includes("gru1::");
   };
 
+  const isAbsoluteHttp = (value: string) => /^https?:\/\//i.test(value);
+  const proxify = (url: string) => `/api/stream?url=${encodeURIComponent(url)}`;
+  const rewriteM3U8 = (content: string, sourceUrl: string) =>
+    content
+      .split(/\r?\n/)
+      .map((line) => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) return line;
+        try {
+          const absolute = new URL(trimmed, sourceUrl).toString();
+          if (!isAbsoluteHttp(absolute)) return line;
+          return proxify(absolute);
+        } catch {
+          return line;
+        }
+      })
+      .join('\n');
+
+  app.get('/api/stream', async (req, res) => {
+    const rawUrl = typeof req.query.url === 'string' ? req.query.url : '';
+    const sourceUrl = decodeURIComponent(rawUrl || '').trim();
+
+    if (!isAbsoluteHttp(sourceUrl)) {
+      res.status(400).json({ error: 'Invalid stream URL' });
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
+
+    try {
+      const upstream = await fetch(sourceUrl, {
+        signal: controller.signal,
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          Accept: '*/*',
+          Range: typeof req.headers.range === 'string' ? req.headers.range : '',
+        },
+      });
+
+      const contentType = upstream.headers.get('content-type') || '';
+      if (contentType.includes('mpegurl') || sourceUrl.toLowerCase().includes('.m3u8')) {
+        const m3u = await upstream.text();
+        const rewritten = rewriteM3U8(m3u, sourceUrl);
+        res.status(upstream.status);
+        res.setHeader('content-type', 'application/vnd.apple.mpegurl');
+        res.setHeader('cache-control', 'no-store');
+        res.send(rewritten);
+        return;
+      }
+
+      const buffer = Buffer.from(await upstream.arrayBuffer());
+      res.status(upstream.status);
+      for (const key of ['content-type', 'accept-ranges', 'content-range', 'content-length']) {
+        const value = upstream.headers.get(key);
+        if (value) res.setHeader(key, value);
+      }
+      res.send(buffer);
+    } catch (error: any) {
+      res.status(502).json({ error: 'Stream proxy failed', details: error?.message || 'Unknown error' });
+    } finally {
+      clearTimeout(timeout);
+    }
+  });
+
   // API route to proxy and parse M3U
   app.get("/api/channels", async (req, res) => {
     try {

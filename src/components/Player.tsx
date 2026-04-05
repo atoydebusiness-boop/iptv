@@ -37,6 +37,11 @@ const inferTypeFromText = (channel: Channel): Channel['type'] => {
 const normalizeChannels = (items: Channel[]): Channel[] =>
   items.map((item) => ({ ...item, type: inferTypeFromText(item) }));
 
+const toProxyUrl = (url: string) => {
+  if (url.startsWith('/api/stream?url=')) return url;
+  return `/api/stream?url=${encodeURIComponent(url)}`;
+};
+
 const buildPlayableCandidates = (url: string) => {
   const candidates = new Set<string>();
   const normalized = normalize(url);
@@ -171,7 +176,8 @@ export default function Player() {
     [currentChannel],
   );
 
-  const playbackUrl = currentPlaybackCandidates[playbackCandidateIndex] || currentChannel?.url || '';
+  const directPlaybackUrl = currentPlaybackCandidates[playbackCandidateIndex] || currentChannel?.url || '';
+  const playbackUrl = directPlaybackUrl ? toProxyUrl(directPlaybackUrl) : '';
 
   const jumpToNextChannel = () => {
     if (!currentChannel || filteredChannels.length === 0) return;
@@ -196,14 +202,14 @@ export default function Player() {
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !playbackUrl) return;
+    if (!video || !playbackUrl || !directPlaybackUrl) return;
 
     if (hlsRef.current) {
       hlsRef.current.destroy();
       hlsRef.current = null;
     }
 
-    const normalized = playbackUrl.toLowerCase();
+    const normalized = directPlaybackUrl.toLowerCase();
     const isHlsSource = normalized.includes('.m3u8') || normalized.includes('m3u8');
 
     const playVideo = () => {
@@ -247,7 +253,7 @@ export default function Player() {
       video.removeAttribute('src');
       video.load();
     };
-  }, [playbackUrl]);
+  }, [playbackUrl, directPlaybackUrl]);
 
   return (
     <section id="player" className="py-20 bg-zinc-950">
@@ -274,7 +280,7 @@ export default function Player() {
                   playsInline
                   className="w-full h-full bg-black"
                   onError={() => {
-                    console.error('Video Element Error:', playbackUrl);
+                    console.error('Video Element Error:', directPlaybackUrl);
                     handlePlaybackError();
                   }}
                 />
