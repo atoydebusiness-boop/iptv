@@ -4,6 +4,19 @@ const STREAM_UA =
 const isAbsoluteHttp = (value: string) => /^https?:\/\//i.test(value);
 const proxify = (url: string) => `/api/stream?url=${encodeURIComponent(url)}`;
 
+const buildProxyHeaders = (sourceUrl: string, rangeHeader: string) => {
+  const parsed = new URL(sourceUrl);
+  const origin = `${parsed.protocol}//${parsed.host}`;
+
+  return {
+    'User-Agent': STREAM_UA,
+    Accept: '*/*',
+    Range: rangeHeader,
+    Referer: `${origin}/`,
+    Origin: origin,
+  };
+};
+
 function rewriteM3U8(content: string, sourceUrl: string) {
   const lines = content.split(/\r?\n/);
   return lines
@@ -46,11 +59,7 @@ export default async function handler(req: any, res: any) {
   try {
     const upstream = await fetch(sourceUrl, {
       signal: controller.signal,
-      headers: {
-        'User-Agent': STREAM_UA,
-        Accept: '*/*',
-        Range: req.headers?.range || '',
-      },
+      headers: buildProxyHeaders(sourceUrl, req.headers?.range || ''),
     });
 
     const contentType = upstream.headers.get('content-type') || '';

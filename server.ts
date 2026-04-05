@@ -233,6 +233,19 @@ async function startServer() {
 
   const isAbsoluteHttp = (value: string) => /^https?:\/\//i.test(value);
   const proxify = (url: string) => `/api/stream?url=${encodeURIComponent(url)}`;
+  const buildProxyHeaders = (sourceUrl: string, rangeHeader: string) => {
+    const parsed = new URL(sourceUrl);
+    const origin = `${parsed.protocol}//${parsed.host}`;
+
+    return {
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      Accept: '*/*',
+      Range: rangeHeader,
+      Referer: `${origin}/`,
+      Origin: origin,
+    };
+  };
   const rewriteM3U8 = (content: string, sourceUrl: string) =>
     content
       .split(/\r?\n/)
@@ -264,12 +277,10 @@ async function startServer() {
     try {
       const upstream = await fetch(sourceUrl, {
         signal: controller.signal,
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-          Accept: '*/*',
-          Range: typeof req.headers.range === 'string' ? req.headers.range : '',
-        },
+        headers: buildProxyHeaders(
+          sourceUrl,
+          typeof req.headers.range === 'string' ? req.headers.range : '',
+        ),
       });
 
       const contentType = upstream.headers.get('content-type') || '';
