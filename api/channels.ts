@@ -14,7 +14,7 @@ interface XtreamCredentials {
 type RequestedType = 'all' | 'live' | 'movie' | 'series';
 
 const DEFAULT_IPTV_URL =
-  "http://dnsnexplay.shop/get.php?username=66645868&password=56348969&type=m3u_plus&output=hls";
+  "http://ryzeeng.pro:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
 
 const sanitizeUrl = (value: string) => value.replace(/\n/g, "").replace(/\r/g, "").trim();
 
@@ -203,7 +203,7 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
         name: item.name?.trim() || `Série ${item.series_id}`,
         group: item.category_name?.trim() || "Séries",
         type: "series",
-        url: `${baseUrl}/series/${username}/${password}/${item.series_id}.mp4`,
+        url: `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_series_info&series_id=${encodeURIComponent(String(item.series_id))}`,
       });
     }
   }
@@ -254,8 +254,14 @@ async function resolveChannels(sourceUrl: string, requestedType: RequestedType):
         continue;
       }
 
-      const channels = filterByRequestedType(parseM3U(responseText), requestedType);
+      const parsedChannels = parseM3U(responseText);
+      const channels = filterByRequestedType(parsedChannels, requestedType);
       if (channels.length > 0) return channels;
+
+      if (requestedType !== "all" && parsedChannels.length > 0) {
+        return parsedChannels;
+      }
+
       lastError = `M3U sem itens reproduzíveis em ${url}.`;
     } catch (err: any) {
       lastError = err?.message || `Erro de rede ao buscar ${url}`;

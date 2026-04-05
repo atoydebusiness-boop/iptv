@@ -67,6 +67,20 @@ const buildPlayableCandidates = (url: string) => {
     addWithProtocolVariants(url.replace(/\.ts(\?.*)?$/i, '.m3u8$1'));
   }
 
+  if (normalized.includes('/movie/') || normalized.includes('/series/')) {
+    const withExt = (ext: string) => {
+      if (/\.[a-z0-9]+(\?.*)?$/i.test(url)) {
+        addWithProtocolVariants(url.replace(/\.[a-z0-9]+(\?.*)?$/i, `.${ext}$1`));
+      } else {
+        addWithProtocolVariants(`${url}.${ext}`);
+      }
+    };
+
+    withExt('m3u8');
+    withExt('mp4');
+    withExt('ts');
+  }
+
   return [...candidates];
 };
 
@@ -203,9 +217,16 @@ export default function Player() {
   };
 
   const handlePlaybackError = (reason?: string) => {
+    const isVodLike = currentChannel?.type === 'movie' || currentChannel?.type === 'series';
+
     if (playbackCandidateIndex + 1 < currentPlaybackCandidates.length) {
       setPlaybackCandidateIndex((prev) => prev + 1);
       setError('Tentando formato alternativo do mesmo item...');
+      return;
+    }
+
+    if (isVodLike) {
+      setError(reason || 'Não foi possível reproduzir este item. Tente outro filme/série da lista.');
       return;
     }
 
@@ -292,6 +313,9 @@ export default function Player() {
                   muted
                   playsInline
                   className="w-full h-full bg-black"
+                  onLoadedData={() => {
+                    setError('');
+                  }}
                   onError={() => {
                     console.error('Video Element Error:', directPlaybackUrl);
                     handlePlaybackError();

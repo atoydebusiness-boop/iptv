@@ -3,18 +3,26 @@ const STREAM_UA =
 
 const isAbsoluteHttp = (value: string) => /^https?:\/\//i.test(value);
 const proxify = (url: string) => `/api/stream?url=${encodeURIComponent(url)}`;
+const STREAM_EXTENSIONS = ['m3u8', 'mp4', 'ts', 'mkv'];
+type SeriesInfoEpisode = { id?: string | number; container_extension?: string };
+type SeriesInfoPayload = { episodes?: Record<string, SeriesInfoEpisode[] | undefined> | SeriesInfoEpisode[] };
 
 const buildProxyHeaders = (sourceUrl: string, rangeHeader: string) => {
   const parsed = new URL(sourceUrl);
   const origin = `${parsed.protocol}//${parsed.host}`;
 
-  return {
+  const headers: Record<string, string> = {
     'User-Agent': STREAM_UA,
     Accept: '*/*',
-    Range: rangeHeader,
     Referer: `${origin}/`,
     Origin: origin,
   };
+
+  if (typeof rangeHeader === 'string' && rangeHeader.trim()) {
+    headers.Range = rangeHeader;
+  }
+
+  return headers;
 };
 
 function rewriteM3U8(content: string, sourceUrl: string) {
@@ -35,6 +43,77 @@ function rewriteM3U8(content: string, sourceUrl: string) {
     .join('\n');
 }
 
+function buildSourceCandidates(sourceUrl: string): string[] {
+  const candidates = new Set<string>();
+  const normalized = sourceUrl.toLowerCase();
+
+  const add = (url: string) => {
+    candidates.add(url);
+    if (url.startsWith('http://')) candidates.add(url.replace('http://', 'https://'));
+  };
+
+  add(sourceUrl);
+
+  const shouldTryVODFallbacks = normalized.includes('/movie/') || normalized.includes('/series/');
+  if (shouldTryVODFallbacks) {
+    for (const ext of STREAM_EXTENSIONS) {
+      if (/\.[a-z0-9]+(\?.*)?$/i.test(sourceUrl)) {
+        add(sourceUrl.replace(/\.[a-z0-9]+(\?.*)?$/i, `.${ext}$1`));
+      } else {
+        add(`${sourceUrl}.${ext}`);
+      }
+    }
+  }
+
+  return [...candidates];
+}
+
+const parseFirstEpisode = (episodes: SeriesInfoPayload['episodes']): SeriesInfoEpisode | null => {
+  if (!episodes) return null;
+  if (Array.isArray(episodes)) return episodes.find((episode) => episode?.id) || null;
+
+  const seasonKeys = Object.keys(episodes).sort((a, b) => Number(a) - Number(b));
+  for (const seasonKey of seasonKeys) {
+    const seasonEpisodes = episodes[seasonKey];
+    if (!Array.isArray(seasonEpisodes)) continue;
+    const first = seasonEpisodes.find((episode) => episode?.id);
+    if (first) return first;
+  }
+
+  return null;
+};
+
+async function resolveSeriesInfoToStream(seriesInfoUrl: string): Promise<string> {
+  const parsed = new URL(seriesInfoUrl);
+  if (parsed.searchParams.get('action') !== 'get_series_info') return seriesInfoUrl;
+
+  const username = parsed.searchParams.get('username') || '';
+  const password = parsed.searchParams.get('password') || '';
+  if (!username || !password) return seriesInfoUrl;
+
+  const seriesResponse = await fetch(seriesInfoUrl, {
+    headers: {
+      'User-Agent': STREAM_UA,
+      Accept: 'application/json,text/plain,*/*',
+      'Cache-Control': 'no-cache',
+    },
+  });
+
+  if (!seriesResponse.ok) {
+    throw new Error(`Series info retornou ${seriesResponse.status}`);
+  }
+
+  const payload = (await seriesResponse.text()).trim();
+  const parsedPayload = JSON.parse(payload) as SeriesInfoPayload;
+  const firstEpisode = parseFirstEpisode(parsedPayload.episodes);
+  if (!firstEpisode?.id) {
+    throw new Error('Série sem episódios reproduzíveis.');
+  }
+
+  const ext = (firstEpisode.container_extension || 'mp4').replace(/[^a-z0-9]/gi, '') || 'mp4';
+  return `${parsed.protocol}//${parsed.host}/series/${username}/${password}/${firstEpisode.id}.${ext}`;
+}
+
 export default async function handler(req: any, res: any) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
@@ -53,20 +132,46 @@ export default async function handler(req: any, res: any) {
     return;
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12000);
-
   try {
-    const upstream = await fetch(sourceUrl, {
-      signal: controller.signal,
-      headers: buildProxyHeaders(sourceUrl, req.headers?.range || ''),
-    });
+    const resolvedSourceUrl = await resolveSeriesInfoToStream(sourceUrl);
+    const candidateUrls = buildSourceCandidates(resolvedSourceUrl);
+    let upstream: Response | null = null;
+    let finalSourceUrl = sourceUrl;
+    let lastError = '';
+
+    for (const candidateUrl of candidateUrls) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 12000);
+      try {
+        const attempt = await fetch(candidateUrl, {
+          signal: controller.signal,
+          headers: buildProxyHeaders(candidateUrl, req.headers?.range || ''),
+        });
+
+        if (!attempt.ok) {
+          lastError = `Upstream ${attempt.status} para ${candidateUrl}`;
+          continue;
+        }
+
+        upstream = attempt;
+        finalSourceUrl = candidateUrl;
+        break;
+      } catch (error: any) {
+        lastError = error?.message || `Falha ao buscar ${candidateUrl}`;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    if (!upstream) {
+      throw new Error(lastError || 'Nenhuma URL candidata respondeu com sucesso.');
+    }
 
     const contentType = upstream.headers.get('content-type') || '';
 
-    if (contentType.includes('mpegurl') || sourceUrl.toLowerCase().includes('.m3u8')) {
+    if (contentType.includes('mpegurl') || finalSourceUrl.toLowerCase().includes('.m3u8')) {
       const m3u = await upstream.text();
-      const rewritten = rewriteM3U8(m3u, sourceUrl);
+      const rewritten = rewriteM3U8(m3u, finalSourceUrl);
       res.status(upstream.status);
       res.setHeader('content-type', 'application/vnd.apple.mpegurl');
       res.setHeader('cache-control', 'no-store');
@@ -84,7 +189,5 @@ export default async function handler(req: any, res: any) {
     res.send(buffer);
   } catch (error: any) {
     res.status(502).json({ error: 'Stream proxy failed', details: error?.message || 'Unknown error' });
-  } finally {
-    clearTimeout(timeout);
   }
 }
