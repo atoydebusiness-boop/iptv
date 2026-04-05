@@ -105,7 +105,7 @@ export default function Player() {
     const url = `/api/session?clientId=${encodeURIComponent(resolvedClientId)}&plan=${plan}&trialMinutes=${trialMinutes}`;
     const response = await fetch(url, { cache: 'no-store' });
     if (!response.ok) {
-      throw new Error('Não foi possível iniciar sessão de teste.');
+      return;
     }
     const data = await response.json();
     setSessionToken(String(data?.token || ''));
@@ -121,7 +121,7 @@ export default function Player() {
     const id = getOrCreateClientId();
     setClientId(id);
     createSession(id).catch((err) => {
-      setError(err?.message || 'Falha ao iniciar sessão.');
+      console.warn('Sessão opcional indisponível, seguindo no modo compatível.', err);
     });
 
     try {
@@ -246,8 +246,12 @@ export default function Player() {
   const directPlaybackUrl = currentPlaybackCandidates[playbackCandidateIndex] || currentChannel?.url || '';
   const streamSessionId = currentChannel ? btoa(currentChannel.url).replace(/=/g, '') : '';
   const playbackUrl =
-    directPlaybackUrl && clientId && sessionToken && streamSessionId
-      ? `${toProxyUrl(directPlaybackUrl)}&token=${encodeURIComponent(sessionToken)}&clientId=${encodeURIComponent(clientId)}&sid=${encodeURIComponent(streamSessionId)}`
+    directPlaybackUrl
+      ? (
+        sessionToken && clientId && streamSessionId
+          ? `${toProxyUrl(directPlaybackUrl)}&token=${encodeURIComponent(sessionToken)}&clientId=${encodeURIComponent(clientId)}&sid=${encodeURIComponent(streamSessionId)}`
+          : toProxyUrl(directPlaybackUrl)
+      )
       : '';
 
   const handlePlaybackError = (reason?: string) => {

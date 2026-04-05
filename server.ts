@@ -274,8 +274,11 @@ async function startServer() {
   };
 
   const isAbsoluteHttp = (value: string) => /^https?:\/\//i.test(value);
-  const proxify = (url: string, auth: { token: string; clientId: string; sid: string }) =>
-    `/api/stream?url=${encodeURIComponent(url)}&token=${encodeURIComponent(auth.token)}&clientId=${encodeURIComponent(auth.clientId)}&sid=${encodeURIComponent(auth.sid)}`;
+  const proxify = (url: string, auth?: { token: string; clientId: string; sid: string }) => {
+    const base = `/api/stream?url=${encodeURIComponent(url)}`;
+    if (!auth) return base;
+    return `${base}&token=${encodeURIComponent(auth.token)}&clientId=${encodeURIComponent(auth.clientId)}&sid=${encodeURIComponent(auth.sid)}`;
+  };
   const buildProxyHeaders = (sourceUrl: string, rangeHeader: string) => {
     const parsed = new URL(sourceUrl);
     const origin = `${parsed.protocol}//${parsed.host}`;
@@ -289,7 +292,7 @@ async function startServer() {
       Origin: origin,
     };
   };
-  const rewriteM3U8 = (content: string, sourceUrl: string, auth: { token: string; clientId: string; sid: string }) =>
+  const rewriteM3U8 = (content: string, sourceUrl: string, auth?: { token: string; clientId: string; sid: string }) =>
     content
       .split(/\r?\n/)
       .map((line) => {
@@ -328,24 +331,23 @@ async function startServer() {
       res.status(400).json({ error: 'Invalid stream URL' });
       return;
     }
-    const validation = validateClientSession({ token, clientId });
-    if (!validation.ok) {
-      res.status(401).json({ error: 'Sessão inválida', details: validation.reason });
-      return;
-    }
-    if (!sid) {
-      res.status(400).json({ error: 'streamId ausente', details: 'Envie sid no /api/stream.' });
-      return;
-    }
-    const streamAccess = touchStreamForSession({ token, streamId: sid });
-    if (!streamAccess.ok) {
-      res.status(429).json({
-        error: 'Limite de sessões excedido',
-        details: streamAccess.reason,
-        activeStreams: streamAccess.activeStreams,
-        limit: streamAccess.limit,
-      });
-      return;
+    const hasSessionContext = Boolean(token && clientId && sid);
+    if (hasSessionContext) {
+      const validation = validateClientSession({ token, clientId });
+      if (!validation.ok) {
+        res.status(401).json({ error: 'Sessão inválida', details: validation.reason });
+        return;
+      }
+      const streamAccess = touchStreamForSession({ token, streamId: sid });
+      if (!streamAccess.ok) {
+        res.status(429).json({
+          error: 'Limite de sessões excedido',
+          details: streamAccess.reason,
+          activeStreams: streamAccess.activeStreams,
+          limit: streamAccess.limit,
+        });
+        return;
+      }
     }
 
     const controller = new AbortController();
@@ -363,7 +365,7 @@ async function startServer() {
       const contentType = upstream.headers.get('content-type') || '';
       if (contentType.includes('mpegurl') || sourceUrl.toLowerCase().includes('.m3u8')) {
         const m3u = await upstream.text();
-        const rewritten = rewriteM3U8(m3u, sourceUrl, { token, clientId, sid });
+        const rewritten = rewriteM3U8(m3u, sourceUrl, hasSessionContext ? { token, clientId, sid } : undefined);
         res.status(upstream.status);
         res.setHeader('content-type', 'application/vnd.apple.mpegurl');
         res.setHeader('cache-control', 'no-store');
