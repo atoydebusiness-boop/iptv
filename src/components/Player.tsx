@@ -5,7 +5,11 @@ import { Play, List, Search, AlertCircle, Zap } from 'lucide-react';
 interface Channel {
   name: string;
   url: string;
+  group?: string;
+  type?: 'live' | 'movie' | 'series' | 'unknown';
 }
+
+type ContentTab = 'all' | 'live' | 'movie' | 'series';
 
 export default function Player() {
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -13,6 +17,7 @@ export default function Player() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [activeTab, setActiveTab] = useState<ContentTab>('all');
 
   const apiUrl = '/api/channels';
 
@@ -26,8 +31,15 @@ export default function Player() {
     try {
       const response = await fetch(apiUrl);
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.details || 'Falha ao carregar canais do servidor.');
+        const errorRaw = await response.text();
+        let errorMessage = 'Falha ao carregar lista do servidor.';
+        try {
+          const parsedError = JSON.parse(errorRaw);
+          errorMessage = parsedError.details || parsedError.error || errorMessage;
+        } catch {
+          errorMessage = errorRaw || errorMessage;
+        }
+        throw new Error(errorMessage);
       }
       const data = await response.json();
       if (data.length === 0) throw new Error('Nenhum canal disponível no momento.');
@@ -44,9 +56,13 @@ export default function Player() {
     }
   };
 
-  const filteredChannels = channels.filter(c => 
-    c.name.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredChannels = channels.filter((channel) => {
+    const matchesSearch =
+      channel.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      channel.group?.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesTab = activeTab === 'all' ? true : channel.type === activeTab;
+    return matchesSearch && matchesTab;
+  });
 
   const PlayerComponent = ReactPlayer as any;
 
@@ -123,6 +139,26 @@ export default function Player() {
                   {filteredChannels.length} itens
                 </span>
               </div>
+              <div className="grid grid-cols-4 gap-2 mb-3">
+                {([
+                  { id: 'all', label: 'Tudo' },
+                  { id: 'live', label: 'Ao vivo' },
+                  { id: 'movie', label: 'Filmes' },
+                  { id: 'series', label: 'Séries' },
+                ] as Array<{ id: ContentTab; label: string }>).map((tab) => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveTab(tab.id)}
+                    className={`text-xs py-2 rounded-lg transition-colors ${
+                      activeTab === tab.id
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-black text-gray-400 hover:text-white hover:bg-white/10'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
                 <input
@@ -148,7 +184,12 @@ export default function Player() {
                     }`}
                   >
                     <div className={`w-2 h-2 rounded-full ${currentChannel?.url === channel.url ? 'bg-white' : 'bg-green-500'}`} />
-                    <span className="truncate">{channel.name}</span>
+                    <div className="min-w-0 flex-1">
+                      <span className="truncate block">{channel.name}</span>
+                      {channel.group && (
+                        <span className="text-[11px] text-gray-500 truncate block">{channel.group}</span>
+                      )}
+                    </div>
                   </button>
                 ))
               ) : (

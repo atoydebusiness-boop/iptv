@@ -9,12 +9,15 @@ const __dirname = path.dirname(__filename);
 interface Channel {
   name: string;
   url: string;
+  group?: string;
+  type?: "live" | "movie" | "series" | "unknown";
 }
 
 function parseM3U(content: string): Channel[] {
   const lines = content.split(/\r?\n/);
   const channels: Channel[] = [];
   let currentName = "";
+  let currentGroup = "";
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
@@ -22,6 +25,7 @@ function parseM3U(content: string): Channel[] {
 
     if (line.startsWith("#EXTINF:")) {
       const tvgNameMatch = line.match(/tvg-name="([^"]+)"/);
+      const groupMatch = line.match(/group-title="([^"]+)"/);
       const commaMatch = line.match(/,(.*)$/);
       if (tvgNameMatch && tvgNameMatch[1]) {
         currentName = tvgNameMatch[1];
@@ -30,12 +34,22 @@ function parseM3U(content: string): Channel[] {
       } else {
         currentName = "Canal Sem Nome";
       }
+      currentGroup = groupMatch?.[1]?.trim() || "";
     } else if (line.startsWith("http")) {
+      const normalizedUrl = line.toLowerCase();
+      let type: Channel["type"] = "unknown";
+      if (normalizedUrl.includes("/live/")) type = "live";
+      else if (normalizedUrl.includes("/movie/")) type = "movie";
+      else if (normalizedUrl.includes("/series/")) type = "series";
+
       channels.push({
         name: currentName || "Canal Sem Nome",
         url: line,
+        group: currentGroup,
+        type,
       });
       currentName = "";
+      currentGroup = "";
     }
   }
   return channels;
@@ -70,7 +84,14 @@ async function startServer() {
       const content = await response.text();
       console.log(`M3U fetched successfully (${content.length} bytes)`);
       
+      if (!content.includes("#EXTM3U")) {
+        throw new Error("Resposta inválida do provedor (não retornou M3U).");
+      }
+
       const channels = parseM3U(content);
+      if (channels.length === 0) {
+        throw new Error("Lista retornada sem itens reproduzíveis.");
+      }
       console.log(`Parsed ${channels.length} channels`);
       
       res.json(channels);
