@@ -12,7 +12,7 @@ interface XtreamCredentials {
 }
 
 const DEFAULT_IPTV_URL =
-  "http://dnsnexplay.shop/get.php?username=66645868&password=56348969&type=m3u_plus&output=mpegts";
+  "http://dnsnexplay.shop/get.php?username=66645868&password=56348969&type=m3u_plus&output=hls";
 
 const sanitizeUrl = (value: string) => value.replace(/\n/g, "").replace(/\r/g, "").trim();
 
@@ -63,7 +63,7 @@ function buildCandidateUrls(rawUrl: string): string[] {
   try {
     const parsed = new URL(cleaned.startsWith("http") ? cleaned : `http://${cleaned}`);
     const output = (parsed.searchParams.get("output") || "").toLowerCase();
-    const outputs = output ? [output, "mpegts", "ts", "m3u8"] : ["mpegts", "ts", "m3u8"];
+    const outputs = output ? [output, "hls", "m3u8", "mpegts", "ts"] : ["hls", "m3u8", "mpegts", "ts"];
 
     for (const protocol of ["http:", "https:"]) {
       for (const out of outputs) {
@@ -154,7 +154,7 @@ async function buildChannelsFromXtream(rawUrl: string): Promise<Channel[]> {
         name: item.name?.trim() || `Live ${item.stream_id}`,
         group: item.category_name?.trim() || "Ao vivo",
         type: "live",
-        url: `${baseUrl}/live/${username}/${password}/${item.stream_id}.ts`,
+        url: `${baseUrl}/live/${username}/${password}/${item.stream_id}.m3u8`,
       });
     }
   }
