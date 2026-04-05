@@ -77,13 +77,16 @@ async function buildChannelsFromXtream(rawUrl: string): Promise<Channel[]> {
   const { baseUrl, username, password } = creds;
   const liveUrl = `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_live_streams`;
   const vodUrl = `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_vod_streams`;
+  const seriesUrl = `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_series`;
 
   type LiveItem = { name?: string; stream_id?: number | string; category_name?: string };
   type VodItem = { name?: string; stream_id?: number | string; category_name?: string; container_extension?: string };
+  type SeriesItem = { name?: string; series_id?: number | string; category_name?: string };
 
-  const [liveItems, vodItems] = await Promise.allSettled([
+  const [liveItems, vodItems, seriesItems] = await Promise.allSettled([
     fetchXtreamJson<LiveItem[]>(liveUrl),
     fetchXtreamJson<VodItem[]>(vodUrl),
+    fetchXtreamJson<SeriesItem[]>(seriesUrl),
   ]);
 
   const channels: Channel[] = [];
@@ -113,10 +116,24 @@ async function buildChannelsFromXtream(rawUrl: string): Promise<Channel[]> {
     }
   }
 
+
+  if (seriesItems.status === "fulfilled" && Array.isArray(seriesItems.value)) {
+    for (const item of seriesItems.value) {
+      if (!item?.series_id) continue;
+      channels.push({
+        name: item.name?.trim() || `Série ${item.series_id}`,
+        group: item.category_name?.trim() || "Séries",
+        type: "series",
+        url: `${baseUrl}/series/${username}/${password}/${item.series_id}.mp4`,
+      });
+    }
+  }
+
   if (channels.length === 0) {
     const liveErr = liveItems.status === "rejected" ? liveItems.reason?.message || String(liveItems.reason) : "ok";
     const vodErr = vodItems.status === "rejected" ? vodItems.reason?.message || String(vodItems.reason) : "ok";
-    throw new Error(`Fallback Xtream sem itens. live=${liveErr}; vod=${vodErr}`);
+    const seriesErr = seriesItems.status === "rejected" ? seriesItems.reason?.message || String(seriesItems.reason) : "ok";
+    throw new Error(`Fallback Xtream sem itens. live=${liveErr}; vod=${vodErr}; series=${seriesErr}`);
   }
 
   return channels;

@@ -52,6 +52,34 @@ const getPlayerConfig = (url: string) => {
   };
 };
 
+const buildPlayableCandidates = (url: string) => {
+  const candidates = new Set<string>();
+  const normalized = normalize(url);
+
+  const addWithProtocolVariants = (input: string) => {
+    candidates.add(input);
+    if (input.startsWith('http://')) {
+      candidates.add(input.replace('http://', 'https://'));
+    }
+  };
+
+  addWithProtocolVariants(url);
+
+  if (normalized.includes('.ts')) {
+    addWithProtocolVariants(url.replace(/\.ts(\?.*)?$/i, '.m3u8$1'));
+  }
+
+  if (normalized.includes('.m3u8')) {
+    addWithProtocolVariants(url.replace(/\.m3u8(\?.*)?$/i, '.ts$1'));
+  }
+
+  if (normalized.includes('/live/')) {
+    addWithProtocolVariants(url.replace(/\.ts(\?.*)?$/i, '.m3u8$1'));
+  }
+
+  return [...candidates];
+};
+
 export default function Player() {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [currentChannel, setCurrentChannel] = useState<Channel | null>(null);
@@ -60,6 +88,7 @@ export default function Player() {
   const [searchTerm, setSearchTerm] = useState('');
   const [activeTab, setActiveTab] = useState<ContentTab>('all');
   const [visibleCount, setVisibleCount] = useState(VISIBLE_PAGE_SIZE);
+  const [playbackCandidateIndex, setPlaybackCandidateIndex] = useState(0);
 
   const apiUrl = '/api/channels';
 
@@ -142,12 +171,24 @@ export default function Player() {
     [filteredChannels, visibleCount],
   );
 
+  useEffect(() => {
+    setPlaybackCandidateIndex(0);
+  }, [currentChannel?.url]);
+
+  const currentPlaybackCandidates = useMemo(
+    () => (currentChannel ? buildPlayableCandidates(currentChannel.url) : []),
+    [currentChannel],
+  );
+
+  const playbackUrl = currentPlaybackCandidates[playbackCandidateIndex] || currentChannel?.url || '';
+
   const jumpToNextChannel = () => {
     if (!currentChannel || filteredChannels.length === 0) return;
     const currentIndex = filteredChannels.findIndex((item) => item.url === currentChannel.url);
     const nextIndex = currentIndex >= 0 ? currentIndex + 1 : 0;
     if (nextIndex < filteredChannels.length) {
       setCurrentChannel(filteredChannels[nextIndex]);
+      setPlaybackCandidateIndex(0);
     }
   };
 
@@ -158,7 +199,7 @@ export default function Player() {
       <div className="max-w-7xl mx-auto px-4">
         <div className="text-center mb-12">
           <h2 className="text-3xl md:text-4xl font-bold mb-4">Web Player M3U</h2>
-          <p className="text-gray-400">A lista já entra carregada, com filtros para ao vivo, filmes e séries.</p>
+          <p className="text-gray-400">A lista já entra carregada, abre tentando formatos alternativos e tem filtros para ao vivo, filmes e séries.</p>
         </div>
 
         <div className="grid lg:grid-cols-3 gap-8">
@@ -171,16 +212,23 @@ export default function Player() {
                 </div>
               ) : currentChannel ? (
                 <PlayerComponent
-                  url={currentChannel.url}
+                  url={playbackUrl}
                   controls
                   width="100%"
                   height="100%"
                   playing
                   muted
                   playsinline
-                  config={getPlayerConfig(currentChannel.url)}
+                  config={getPlayerConfig(playbackUrl)}
                   onError={(e: any) => {
-                    console.error('Player Error:', e, currentChannel.url);
+                    console.error('Player Error:', e, playbackUrl);
+
+                    if (playbackCandidateIndex + 1 < currentPlaybackCandidates.length) {
+                      setPlaybackCandidateIndex((prev) => prev + 1);
+                      setError('Tentando formato alternativo do mesmo item...');
+                      return;
+                    }
+
                     jumpToNextChannel();
                     setError('Esse item falhou. Trocamos automaticamente para o próximo da lista.');
                   }}
@@ -267,7 +315,7 @@ export default function Player() {
                   {visibleChannels.map((channel, i) => (
                     <button
                       key={`${channel.url}-${i}`}
-                      onClick={() => setCurrentChannel(channel)}
+                      onClick={() => { setCurrentChannel(channel); setPlaybackCandidateIndex(0); setError(''); }}
                       className={`w-full text-left p-3 rounded-lg text-sm transition-all mb-1 flex items-center gap-3 ${
                         currentChannel?.url === channel.url
                           ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20'
