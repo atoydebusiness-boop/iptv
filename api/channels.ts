@@ -157,6 +157,10 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
   type LiveItem = { name?: string; stream_id?: string | number; category_name?: string };
   type VodItem = { name?: string; stream_id?: string | number; category_name?: string; container_extension?: string };
   type SeriesItem = { name?: string; series_id?: string | number; category_name?: string };
+  type SeriesInfo = {
+    episodes?: Record<string, Array<{ id?: string | number; title?: string; container_extension?: string }>>;
+    info?: { name?: string; category_name?: string };
+  };
 
   const shouldLoadLive = requestedType === 'all' || requestedType === 'live';
   const shouldLoadVod = requestedType === 'all' || requestedType === 'movie';
@@ -197,15 +201,30 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
 
 
   if (seriesItems.status === "fulfilled" && Array.isArray(seriesItems.value)) {
-    for (const item of seriesItems.value) {
-      if (!item?.series_id) continue;
+    const candidateSeries = seriesItems.value.slice(0, 250);
+    const infos = await Promise.allSettled(
+      candidateSeries.map((item) =>
+        fetchXtreamJson<SeriesInfo>(
+          `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_series_info&series_id=${encodeURIComponent(String(item.series_id || ''))}`,
+        ),
+      ),
+    );
+
+    infos.forEach((result, index) => {
+      const baseSeries = candidateSeries[index];
+      if (result.status !== 'fulfilled') return;
+      const payload = result.value;
+      const seasons = Object.values(payload.episodes || {});
+      const firstEpisode = seasons.flat().find((episode) => episode?.id);
+      if (!firstEpisode?.id) return;
+      const ext = (firstEpisode.container_extension || 'mp4').replace(/[^a-z0-9]/gi, '') || 'mp4';
       channels.push({
-        name: item.name?.trim() || `Série ${item.series_id}`,
-        group: item.category_name?.trim() || "Séries",
-        type: "series",
-        url: `${baseUrl}/series/${username}/${password}/${item.series_id}.mp4`,
+        name: `${payload.info?.name?.trim() || baseSeries?.name?.trim() || `Série ${baseSeries?.series_id}`} • ${firstEpisode.title?.trim() || 'Episódio 1'}`,
+        group: payload.info?.category_name?.trim() || baseSeries?.category_name?.trim() || 'Séries',
+        type: 'series',
+        url: `${baseUrl}/series/${username}/${password}/${firstEpisode.id}.${ext}`,
       });
-    }
+    });
   }
 
   if (channels.length === 0) {

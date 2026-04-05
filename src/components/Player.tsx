@@ -80,10 +80,37 @@ export default function Player() {
   const [visibleCount, setVisibleCount] = useState(VISIBLE_PAGE_SIZE);
   const [playbackCandidateIndex, setPlaybackCandidateIndex] = useState(0);
   const [loadedTypes, setLoadedTypes] = useState<Set<ContentTab>>(new Set(['all']));
+  const [clientId, setClientId] = useState('');
+  const [sessionToken, setSessionToken] = useState('');
+  const [sessionExpiresAt, setSessionExpiresAt] = useState<number>(0);
+  const [showSubscribePopup, setShowSubscribePopup] = useState(false);
+  const [timeLeftLabel, setTimeLeftLabel] = useState('');
 
   const apiUrl = '/api/channels';
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
+
+  const getOrCreateClientId = () => {
+    const storageKey = 'iptv_client_id_v1';
+    const existing = localStorage.getItem(storageKey);
+    if (existing) return existing;
+    const generated = `client_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`;
+    localStorage.setItem(storageKey, generated);
+    return generated;
+  };
+
+  const createSession = async (resolvedClientId: string) => {
+    const plan = 'teste';
+    const trialMinutes = 15;
+    const url = `/api/session?clientId=${encodeURIComponent(resolvedClientId)}&plan=${plan}&trialMinutes=${trialMinutes}`;
+    const response = await fetch(url, { cache: 'no-store' });
+    if (!response.ok) {
+      return;
+    }
+    const data = await response.json();
+    setSessionToken(String(data?.token || ''));
+    setSessionExpiresAt(Number(data?.expiresAt || 0));
+  };
 
   const setInitialChannel = (list: Channel[]) => {
     const preferredGloboChannel = list.find((channel) => normalize(channel.name).includes('globo'));
@@ -91,6 +118,12 @@ export default function Player() {
   };
 
   useEffect(() => {
+    const id = getOrCreateClientId();
+    setClientId(id);
+    createSession(id).catch((err) => {
+      console.warn('Sessão opcional indisponível, seguindo no modo compatível.', err);
+    });
+
     try {
       const cached = localStorage.getItem(CHANNEL_CACHE_KEY);
       if (cached) {
@@ -107,6 +140,27 @@ export default function Player() {
 
     loadChannels();
   }, []);
+
+  useEffect(() => {
+    if (!sessionExpiresAt) return;
+
+    const formatRemaining = (remainingMs: number) => {
+      const totalSeconds = Math.max(0, Math.floor(remainingMs / 1000));
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds % 60;
+      return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    };
+
+    const tick = () => {
+      const remaining = sessionExpiresAt - Date.now();
+      setTimeLeftLabel(formatRemaining(remaining));
+      if (remaining <= 0) setShowSubscribePopup(true);
+    };
+
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => window.clearInterval(timer);
+  }, [sessionExpiresAt]);
 
   const loadChannels = async (requestedType: ContentTab = "all") => {
     setLoading(true);
@@ -190,17 +244,15 @@ export default function Player() {
   );
 
   const directPlaybackUrl = currentPlaybackCandidates[playbackCandidateIndex] || currentChannel?.url || '';
-  const playbackUrl = directPlaybackUrl ? toProxyUrl(directPlaybackUrl) : '';
-
-  const jumpToNextChannel = () => {
-    if (!currentChannel || filteredChannels.length === 0) return;
-    const currentIndex = filteredChannels.findIndex((item) => item.url === currentChannel.url);
-    const nextIndex = currentIndex >= 0 ? currentIndex + 1 : 0;
-    if (nextIndex < filteredChannels.length) {
-      setCurrentChannel(filteredChannels[nextIndex]);
-      setPlaybackCandidateIndex(0);
-    }
-  };
+  const streamSessionId = currentChannel ? btoa(currentChannel.url).replace(/=/g, '') : '';
+  const playbackUrl =
+    directPlaybackUrl
+      ? (
+        sessionToken && clientId && streamSessionId
+          ? `${toProxyUrl(directPlaybackUrl)}&token=${encodeURIComponent(sessionToken)}&clientId=${encodeURIComponent(clientId)}&sid=${encodeURIComponent(streamSessionId)}`
+          : toProxyUrl(directPlaybackUrl)
+      )
+      : '';
 
   const handlePlaybackError = (reason?: string) => {
     if (playbackCandidateIndex + 1 < currentPlaybackCandidates.length) {
@@ -209,13 +261,12 @@ export default function Player() {
       return;
     }
 
-    jumpToNextChannel();
-    setError(reason || 'Esse item falhou. Trocamos automaticamente para o próximo da lista.');
+    setError(reason || 'Esse item falhou. Selecione outro canal manualmente.');
   };
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !playbackUrl || !directPlaybackUrl) return;
+    if (!video || !playbackUrl || !directPlaybackUrl || showSubscribePopup) return;
 
     if (hlsRef.current) {
       hlsRef.current.destroy();
@@ -246,7 +297,7 @@ export default function Player() {
       });
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (data.fatal) {
-          handlePlaybackError('Erro no stream HLS. Tentando próximo item...');
+          handlePlaybackError('Erro no stream HLS. Tentando outra variação do mesmo item...');
         }
       });
       return () => {
@@ -266,7 +317,7 @@ export default function Player() {
       video.removeAttribute('src');
       video.load();
     };
-  }, [playbackUrl, directPlaybackUrl]);
+  }, [playbackUrl, directPlaybackUrl, showSubscribePopup]);
 
   return (
     <section id="player" className="py-20 bg-zinc-950">
@@ -274,6 +325,11 @@ export default function Player() {
         <div className="text-center mb-12">
           <h2 className="text-3xl md:text-4xl font-bold mb-4">Web Player M3U</h2>
           <p className="text-gray-400">A lista já entra carregada, abre tentando formatos alternativos e tem filtros para ao vivo, filmes e séries.</p>
+          {sessionToken && (
+            <p className="text-xs text-blue-400 mt-2">
+              Modo teste controlado ativo • tempo restante: {timeLeftLabel || '--:--'}
+            </p>
+          )}
         </div>
 
         <div className="grid lg:grid-cols-3 gap-8">
@@ -411,6 +467,24 @@ export default function Player() {
           </div>
         </div>
       </div>
+
+      {showSubscribePopup && (
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-zinc-900 border border-white/10 rounded-2xl p-6 text-center">
+            <h3 className="text-2xl font-bold mb-2">Tempo de teste encerrado</h3>
+            <p className="text-gray-300 mb-6">
+              Seu acesso de teste terminou. Clique abaixo para assinar e liberar canais, filmes e séries sem bloqueio.
+            </p>
+            <a
+              href="#pricing"
+              onClick={() => setShowSubscribePopup(false)}
+              className="block w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl"
+            >
+              Quero Assinar Agora
+            </a>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

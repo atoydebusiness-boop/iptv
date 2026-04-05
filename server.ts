@@ -2,6 +2,7 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
+import { createClientSession, touchStreamForSession, validateClientSession } from "./lib/sessionStore";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -84,6 +85,10 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
   type LiveItem = { name?: string; stream_id?: number | string; category_name?: string };
   type VodItem = { name?: string; stream_id?: number | string; category_name?: string; container_extension?: string };
   type SeriesItem = { name?: string; series_id?: number | string; category_name?: string };
+  type SeriesInfo = {
+    episodes?: Record<string, Array<{ id?: string | number; title?: string; container_extension?: string }>>;
+    info?: { name?: string; category_name?: string };
+  };
 
   const shouldLoadLive = requestedType === 'all' || requestedType === 'live';
   const shouldLoadVod = requestedType === 'all' || requestedType === 'movie';
@@ -124,15 +129,30 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
 
 
   if (seriesItems.status === "fulfilled" && Array.isArray(seriesItems.value)) {
-    for (const item of seriesItems.value) {
-      if (!item?.series_id) continue;
+    const candidateSeries = seriesItems.value.slice(0, 250);
+    const infos = await Promise.allSettled(
+      candidateSeries.map((item) =>
+        fetchXtreamJson<SeriesInfo>(
+          `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_series_info&series_id=${encodeURIComponent(String(item.series_id || ''))}`,
+        ),
+      ),
+    );
+
+    infos.forEach((result, index) => {
+      const baseSeries = candidateSeries[index];
+      if (result.status !== 'fulfilled') return;
+      const payload = result.value;
+      const seasons = Object.values(payload.episodes || {});
+      const firstEpisode = seasons.flat().find((episode) => episode?.id);
+      if (!firstEpisode?.id) return;
+      const ext = (firstEpisode.container_extension || 'mp4').replace(/[^a-z0-9]/gi, '') || 'mp4';
       channels.push({
-        name: item.name?.trim() || `Série ${item.series_id}`,
-        group: item.category_name?.trim() || "Séries",
-        type: "series",
-        url: `${baseUrl}/series/${username}/${password}/${item.series_id}.mp4`,
+        name: `${payload.info?.name?.trim() || baseSeries?.name?.trim() || `Série ${baseSeries?.series_id}`} • ${firstEpisode.title?.trim() || 'Episódio 1'}`,
+        group: payload.info?.category_name?.trim() || baseSeries?.category_name?.trim() || 'Séries',
+        type: 'series',
+        url: `${baseUrl}/series/${username}/${password}/${firstEpisode.id}.${ext}`,
       });
-    }
+    });
   }
 
   if (channels.length === 0) {
@@ -254,7 +274,11 @@ async function startServer() {
   };
 
   const isAbsoluteHttp = (value: string) => /^https?:\/\//i.test(value);
-  const proxify = (url: string) => `/api/stream?url=${encodeURIComponent(url)}`;
+  const proxify = (url: string, auth?: { token: string; clientId: string; sid: string }) => {
+    const base = `/api/stream?url=${encodeURIComponent(url)}`;
+    if (!auth) return base;
+    return `${base}&token=${encodeURIComponent(auth.token)}&clientId=${encodeURIComponent(auth.clientId)}&sid=${encodeURIComponent(auth.sid)}`;
+  };
   const buildProxyHeaders = (sourceUrl: string, rangeHeader: string) => {
     const parsed = new URL(sourceUrl);
     const origin = `${parsed.protocol}//${parsed.host}`;
@@ -268,7 +292,7 @@ async function startServer() {
       Origin: origin,
     };
   };
-  const rewriteM3U8 = (content: string, sourceUrl: string) =>
+  const rewriteM3U8 = (content: string, sourceUrl: string, auth?: { token: string; clientId: string; sid: string }) =>
     content
       .split(/\r?\n/)
       .map((line) => {
@@ -277,20 +301,53 @@ async function startServer() {
         try {
           const absolute = new URL(trimmed, sourceUrl).toString();
           if (!isAbsoluteHttp(absolute)) return line;
-          return proxify(absolute);
+          return proxify(absolute, auth);
         } catch {
           return line;
         }
       })
       .join('\n');
 
+  app.get('/api/session', (req, res) => {
+    try {
+      const clientId = String(req.query?.clientId || '').trim();
+      const plan = String(req.query?.plan || 'teste');
+      const trialMinutes = Number(req.query?.trialMinutes || 10);
+      const session = createClientSession({ clientId, plan, trialMinutes });
+      res.status(200).json(session);
+    } catch (error: any) {
+      res.status(400).json({ error: 'Falha ao criar sessão', details: error?.message || 'Parâmetros inválidos.' });
+    }
+  });
+
   app.get('/api/stream', async (req, res) => {
     const rawUrl = typeof req.query.url === 'string' ? req.query.url : '';
     const sourceUrl = decodeURIComponent(rawUrl || '').trim();
+    const token = String(req.query?.token || '').trim();
+    const clientId = String(req.query?.clientId || '').trim();
+    const sid = String(req.query?.sid || '').trim();
 
     if (!isAbsoluteHttp(sourceUrl)) {
       res.status(400).json({ error: 'Invalid stream URL' });
       return;
+    }
+    const hasSessionContext = Boolean(token && clientId && sid);
+    if (hasSessionContext) {
+      const validation = validateClientSession({ token, clientId });
+      if (!validation.ok) {
+        res.status(401).json({ error: 'Sessão inválida', details: validation.reason });
+        return;
+      }
+      const streamAccess = touchStreamForSession({ token, streamId: sid });
+      if (!streamAccess.ok) {
+        res.status(429).json({
+          error: 'Limite de sessões excedido',
+          details: streamAccess.reason,
+          activeStreams: streamAccess.activeStreams,
+          limit: streamAccess.limit,
+        });
+        return;
+      }
     }
 
     const controller = new AbortController();
@@ -308,7 +365,7 @@ async function startServer() {
       const contentType = upstream.headers.get('content-type') || '';
       if (contentType.includes('mpegurl') || sourceUrl.toLowerCase().includes('.m3u8')) {
         const m3u = await upstream.text();
-        const rewritten = rewriteM3U8(m3u, sourceUrl);
+        const rewritten = rewriteM3U8(m3u, sourceUrl, hasSessionContext ? { token, clientId, sid } : undefined);
         res.status(upstream.status);
         res.setHeader('content-type', 'application/vnd.apple.mpegurl');
         res.setHeader('cache-control', 'no-store');
