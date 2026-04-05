@@ -8,13 +8,18 @@ const buildProxyHeaders = (sourceUrl: string, rangeHeader: string) => {
   const parsed = new URL(sourceUrl);
   const origin = `${parsed.protocol}//${parsed.host}`;
 
-  return {
+  const headers: Record<string, string> = {
     'User-Agent': STREAM_UA,
     Accept: '*/*',
-    Range: rangeHeader,
     Referer: `${origin}/`,
     Origin: origin,
   };
+
+  if (typeof rangeHeader === 'string' && rangeHeader.trim()) {
+    headers.Range = rangeHeader;
+  }
+
+  return headers;
 };
 
 function rewriteM3U8(content: string, sourceUrl: string) {

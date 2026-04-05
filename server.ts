@@ -72,6 +72,46 @@ async function fetchXtreamJson<T>(url: string, timeoutMs = 7000): Promise<T> {
   }
 }
 
+type SeriesEpisodeItem = { id?: string | number; container_extension?: string };
+type SeriesInfoPayload = {
+  episodes?: Record<string, SeriesEpisodeItem[] | undefined> | SeriesEpisodeItem[];
+};
+
+function extractFirstEpisode(episodes: SeriesInfoPayload["episodes"]): SeriesEpisodeItem | null {
+  if (!episodes) return null;
+  if (Array.isArray(episodes)) return episodes.find((episode) => episode?.id) || null;
+
+  const seasonKeys = Object.keys(episodes).sort((a, b) => Number(a) - Number(b));
+  for (const seasonKey of seasonKeys) {
+    const seasonEpisodes = episodes[seasonKey];
+    if (!Array.isArray(seasonEpisodes)) continue;
+    const firstValid = seasonEpisodes.find((episode) => episode?.id);
+    if (firstValid) return firstValid;
+  }
+
+  return null;
+}
+
+async function resolveSeriesPlaybackUrl(
+  baseUrl: string,
+  username: string,
+  password: string,
+  seriesId: string | number,
+): Promise<string | null> {
+  const infoUrl = `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_series_info&series_id=${encodeURIComponent(String(seriesId))}`;
+
+  try {
+    const info = await fetchXtreamJson<SeriesInfoPayload>(infoUrl, 5000);
+    const firstEpisode = extractFirstEpisode(info?.episodes);
+    if (!firstEpisode?.id) return null;
+
+    const ext = (firstEpisode.container_extension || "mp4").replace(/[^a-z0-9]/gi, "") || "mp4";
+    return `${baseUrl}/series/${username}/${password}/${firstEpisode.id}.${ext}`;
+  } catch {
+    return null;
+  }
+}
+
 async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedType): Promise<Channel[]> {
   const creds = extractXtreamCredentials(rawUrl);
   if (!creds) throw new Error("URL não contém credenciais Xtream válidas.");
@@ -124,14 +164,27 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
 
 
   if (seriesItems.status === "fulfilled" && Array.isArray(seriesItems.value)) {
-    for (const item of seriesItems.value) {
-      if (!item?.series_id) continue;
-      channels.push({
-        name: item.name?.trim() || `Série ${item.series_id}`,
-        group: item.category_name?.trim() || "Séries",
-        type: "series",
-        url: `${baseUrl}/series/${username}/${password}/${item.series_id}.mp4`,
-      });
+    const seriesWithId = seriesItems.value.filter((item) => item?.series_id);
+    const maxSeriesToResolve = requestedType === "series" ? 250 : 80;
+    const selectedSeries = seriesWithId.slice(0, maxSeriesToResolve);
+
+    const resolvedSeries = await Promise.allSettled(
+      selectedSeries.map(async (item) => {
+        const streamUrl = await resolveSeriesPlaybackUrl(baseUrl, username, password, item.series_id as string | number);
+        if (!streamUrl) return null;
+        return {
+          name: item.name?.trim() || `Série ${item.series_id}`,
+          group: item.category_name?.trim() || "Séries",
+          type: "series" as const,
+          url: streamUrl,
+        };
+      }),
+    );
+
+    for (const result of resolvedSeries) {
+      if (result.status === "fulfilled" && result.value) {
+        channels.push(result.value);
+      }
     }
   }
 
@@ -259,14 +312,19 @@ async function startServer() {
     const parsed = new URL(sourceUrl);
     const origin = `${parsed.protocol}//${parsed.host}`;
 
-    return {
+    const headers: Record<string, string> = {
       'User-Agent':
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       Accept: '*/*',
-      Range: rangeHeader,
       Referer: `${origin}/`,
       Origin: origin,
     };
+
+    if (typeof rangeHeader === 'string' && rangeHeader.trim()) {
+      headers.Range = rangeHeader;
+    }
+
+    return headers;
   };
   const rewriteM3U8 = (content: string, sourceUrl: string) =>
     content
