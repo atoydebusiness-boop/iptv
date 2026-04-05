@@ -59,34 +59,70 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  const buildCandidateUrls = () => {
+    const customUrl = process.env.IPTV_M3U_URL?.trim();
+    if (customUrl) return [customUrl];
+
+    const base = "dnsnexplay.shop/get.php?username=98765683&password=49673688&type=m3u_plus";
+    return [
+      `https://${base}&output=m3u8`,
+      `https://${base}&output=ts`,
+      `http://${base}&output=m3u8`,
+      `http://${base}&output=ts`,
+    ];
+  };
+
+  const isLikelyNotFoundPage = (content: string) => {
+    const normalized = content.toLowerCase();
+    return normalized.includes("not_found") || normalized.includes("the page could not be found");
+  };
+
   // API route to proxy and parse M3U
   app.get("/api/channels", async (req, res) => {
-    // Changed output to m3u8 for better browser compatibility
-    const m3uUrl = 'http://dnsnexplay.shop/get.php?username=98765683&password=49673688&type=m3u_plus&output=m3u8';
-    
     try {
       console.log("Fetching M3U from IPTV server...");
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
+      const candidateUrls = buildCandidateUrls();
+      let lastError = "Falha ao buscar a lista M3U.";
+      let content = "";
 
-      const response = await fetch(m3uUrl, {
-        signal: controller.signal,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36',
-          'Accept': '*/*'
+      for (const url of candidateUrls) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
+
+        try {
+          const response = await fetch(url, {
+            signal: controller.signal,
+            headers: {
+              "User-Agent":
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
+              Accept: "*/*",
+            },
+          });
+          clearTimeout(timeout);
+
+          const responseText = await response.text();
+          if (!response.ok) {
+            lastError = `IPTV Server returned ${response.status}`;
+            continue;
+          }
+          if (isLikelyNotFoundPage(responseText)) {
+            lastError = "Servidor respondeu página NOT_FOUND para a URL da lista.";
+            continue;
+          }
+          if (!responseText.includes("#EXTM3U")) {
+            lastError = "Resposta inválida do provedor (não retornou M3U).";
+            continue;
+          }
+
+          content = responseText;
+          console.log(`M3U fetched successfully from ${url} (${content.length} bytes)`);
+          break;
+        } catch (fetchError: any) {
+          clearTimeout(timeout);
+          lastError = fetchError?.message || "Erro de rede ao buscar M3U.";
         }
-      });
-      
-      clearTimeout(timeout);
-
-      if (!response.ok) throw new Error(`IPTV Server returned ${response.status}`);
-      
-      const content = await response.text();
-      console.log(`M3U fetched successfully (${content.length} bytes)`);
-      
-      if (!content.includes("#EXTM3U")) {
-        throw new Error("Resposta inválida do provedor (não retornou M3U).");
       }
+      if (!content) throw new Error(lastError);
 
       const channels = parseM3U(content);
       if (channels.length === 0) {

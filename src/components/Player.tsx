@@ -37,7 +37,7 @@ export default function Player() {
           const parsedError = JSON.parse(errorRaw);
           errorMessage = parsedError.details || parsedError.error || errorMessage;
         } catch {
-          errorMessage = errorRaw || errorMessage;
+          errorMessage = (errorRaw || errorMessage).replace(/\s+/g, ' ').slice(0, 180);
         }
         throw new Error(errorMessage);
       }
