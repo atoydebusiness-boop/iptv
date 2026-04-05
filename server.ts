@@ -9,12 +9,163 @@ const __dirname = path.dirname(__filename);
 interface Channel {
   name: string;
   url: string;
+  group?: string;
+  type?: "live" | "movie" | "series" | "unknown";
+}
+
+interface XtreamCredentials {
+  baseUrl: string;
+  username: string;
+  password: string;
+}
+
+type RequestedType = 'all' | 'live' | 'movie' | 'series';
+
+function extractXtreamCredentials(rawUrl: string): XtreamCredentials | null {
+  try {
+    const parsed = new URL(rawUrl.startsWith("http") ? rawUrl : `http://${rawUrl}`);
+    const username = parsed.searchParams.get("username")?.trim();
+    const password = parsed.searchParams.get("password")?.trim();
+
+    if (!username || !password) return null;
+
+    return {
+      baseUrl: `${parsed.protocol}//${parsed.host}`,
+      username,
+      password,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchXtreamJson<T>(url: string, timeoutMs = 7000): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        Accept: "application/json,text/plain,*/*",
+        "Cache-Control": "no-cache",
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Xtream API retornou ${response.status}`);
+    }
+
+    const text = await response.text();
+    const trimmed = text.trim();
+    if (!trimmed) throw new Error("Xtream API retornou vazio.");
+
+    try {
+      return JSON.parse(trimmed) as T;
+    } catch {
+      throw new Error("Xtream API não retornou JSON válido.");
+    }
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedType): Promise<Channel[]> {
+  const creds = extractXtreamCredentials(rawUrl);
+  if (!creds) throw new Error("URL não contém credenciais Xtream válidas.");
+
+  const { baseUrl, username, password } = creds;
+  const liveUrl = `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_live_streams`;
+  const vodUrl = `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_vod_streams`;
+  const seriesUrl = `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_series`;
+
+  type LiveItem = { name?: string; stream_id?: number | string; category_name?: string };
+  type VodItem = { name?: string; stream_id?: number | string; category_name?: string; container_extension?: string };
+  type SeriesItem = { name?: string; series_id?: number | string; category_name?: string };
+
+  const shouldLoadLive = requestedType === 'all' || requestedType === 'live';
+  const shouldLoadVod = requestedType === 'all' || requestedType === 'movie';
+  const shouldLoadSeries = requestedType === 'all' || requestedType === 'series';
+
+  const [liveItems, vodItems, seriesItems] = await Promise.allSettled([
+    shouldLoadLive ? fetchXtreamJson<LiveItem[]>(liveUrl) : Promise.resolve([] as LiveItem[]),
+    shouldLoadVod ? fetchXtreamJson<VodItem[]>(vodUrl) : Promise.resolve([] as VodItem[]),
+    shouldLoadSeries ? fetchXtreamJson<SeriesItem[]>(seriesUrl) : Promise.resolve([] as SeriesItem[]),
+  ]);
+
+  const channels: Channel[] = [];
+
+  if (liveItems.status === "fulfilled" && Array.isArray(liveItems.value)) {
+    for (const item of liveItems.value) {
+      if (!item?.stream_id) continue;
+      channels.push({
+        name: item.name?.trim() || `Live ${item.stream_id}`,
+        group: item.category_name?.trim() || "Ao vivo",
+        type: "live",
+        url: `${baseUrl}/live/${username}/${password}/${item.stream_id}.m3u8`,
+      });
+    }
+  }
+
+  if (vodItems.status === "fulfilled" && Array.isArray(vodItems.value)) {
+    for (const item of vodItems.value) {
+      if (!item?.stream_id) continue;
+      const ext = (item.container_extension || "mp4").replace(/[^a-z0-9]/gi, "") || "mp4";
+      channels.push({
+        name: item.name?.trim() || `Filme ${item.stream_id}`,
+        group: item.category_name?.trim() || "Filmes",
+        type: "movie",
+        url: `${baseUrl}/movie/${username}/${password}/${item.stream_id}.${ext}`,
+      });
+    }
+  }
+
+
+  if (seriesItems.status === "fulfilled" && Array.isArray(seriesItems.value)) {
+    for (const item of seriesItems.value) {
+      if (!item?.series_id) continue;
+      channels.push({
+        name: item.name?.trim() || `Série ${item.series_id}`,
+        group: item.category_name?.trim() || "Séries",
+        type: "series",
+        url: `${baseUrl}/series/${username}/${password}/${item.series_id}.mp4`,
+      });
+    }
+  }
+
+  if (channels.length === 0) {
+    const liveErr = liveItems.status === "rejected" ? liveItems.reason?.message || String(liveItems.reason) : "ok";
+    const vodErr = vodItems.status === "rejected" ? vodItems.reason?.message || String(vodItems.reason) : "ok";
+    const seriesErr = seriesItems.status === "rejected" ? seriesItems.reason?.message || String(seriesItems.reason) : "ok";
+    throw new Error(`Fallback Xtream sem itens. live=${liveErr}; vod=${vodErr}; series=${seriesErr}`);
+  }
+
+  return channels;
+}
+
+
+function detectChannelType(channel: Channel): Exclude<Channel['type'], 'unknown'> | 'unknown' {
+  if (channel.type && channel.type !== 'unknown') return channel.type;
+
+  const haystack = `${channel.name || ''} ${channel.group || ''} ${channel.url || ''}`.toLowerCase();
+  if (haystack.includes('/series/') || haystack.includes('series') || haystack.includes('temporada')) return 'series';
+  if (haystack.includes('/movie/') || haystack.includes('filme') || haystack.includes('vod')) return 'movie';
+  if (haystack.includes('/live/') || haystack.includes('ao vivo') || haystack.includes('canal')) return 'live';
+  return 'unknown';
+}
+
+function filterByRequestedType(channels: Channel[], requestedType: RequestedType): Channel[] {
+  if (requestedType === 'all') return channels;
+  return channels.filter((channel) => detectChannelType(channel) === requestedType);
 }
 
 function parseM3U(content: string): Channel[] {
   const lines = content.split(/\r?\n/);
   const channels: Channel[] = [];
   let currentName = "";
+  let currentGroup = "";
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
@@ -22,6 +173,7 @@ function parseM3U(content: string): Channel[] {
 
     if (line.startsWith("#EXTINF:")) {
       const tvgNameMatch = line.match(/tvg-name="([^"]+)"/);
+      const groupMatch = line.match(/group-title="([^"]+)"/);
       const commaMatch = line.match(/,(.*)$/);
       if (tvgNameMatch && tvgNameMatch[1]) {
         currentName = tvgNameMatch[1];
@@ -30,15 +182,23 @@ function parseM3U(content: string): Channel[] {
       } else {
         currentName = "Canal Sem Nome";
       }
+      currentGroup = groupMatch?.[1]?.trim() || "";
     } else if (line.startsWith("http")) {
+      const normalizedUrl = line.toLowerCase();
+      let type: Channel["type"] = "unknown";
+      if (normalizedUrl.includes("/live/")) type = "live";
+      else if (normalizedUrl.includes("/movie/")) type = "movie";
+      else if (normalizedUrl.includes("/series/")) type = "series";
+
       channels.push({
         name: currentName || "Canal Sem Nome",
         url: line,
+        group: currentGroup,
+        type,
       });
       currentName = "";
+      currentGroup = "";
     }
-    // Limit to 500 channels for the web preview to ensure fast loading
-    if (channels.length >= 500) break;
   }
   return channels;
 }
@@ -47,35 +207,194 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  const DEFAULT_IPTV_URL =
+    "http://dnsnexplay.shop/get.php?username=66645868&password=56348969&type=m3u_plus&output=hls";
+
+  const sanitizeUrl = (value: string) =>
+    value
+      .replace(/\n/g, "")
+      .replace(/\r/g, "")
+      .trim();
+
+  const buildCandidateUrls = () => {
+    const rawUrl = process.env.IPTV_M3U_URL || DEFAULT_IPTV_URL;
+    const cleaned = sanitizeUrl(rawUrl);
+
+    if (!cleaned) return [];
+
+    const candidates = new Set<string>();
+
+    const addUrlVariants = (urlValue: string) => {
+      try {
+        const parsed = new URL(urlValue.startsWith("http") ? urlValue : `http://${urlValue}`);
+
+        const output = (parsed.searchParams.get("output") || "").toLowerCase();
+        const outputs = output ? [output, "m3u8", "mpegts"] : ["hls", "m3u8", "mpegts"];
+        const protocols = [parsed.protocol, parsed.protocol === "http:" ? "https:" : "http:"];
+
+        for (const protocol of protocols) {
+          for (const out of outputs) {
+            parsed.protocol = protocol;
+            parsed.searchParams.set("output", out);
+            candidates.add(parsed.toString());
+          }
+        }
+      } catch {
+        candidates.add(urlValue);
+      }
+    };
+
+    addUrlVariants(cleaned);
+    return [...candidates];
+  };
+
+  const isLikelyNotFoundPage = (content: string) => {
+    const normalized = content.toLowerCase();
+    return normalized.includes("not_found") || normalized.includes("the page could not be found") || normalized.includes("gru1::");
+  };
+
+  const isAbsoluteHttp = (value: string) => /^https?:\/\//i.test(value);
+  const proxify = (url: string) => `/api/stream?url=${encodeURIComponent(url)}`;
+  const buildProxyHeaders = (sourceUrl: string, rangeHeader: string) => {
+    const parsed = new URL(sourceUrl);
+    const origin = `${parsed.protocol}//${parsed.host}`;
+
+    return {
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      Accept: '*/*',
+      Range: rangeHeader,
+      Referer: `${origin}/`,
+      Origin: origin,
+    };
+  };
+  const rewriteM3U8 = (content: string, sourceUrl: string) =>
+    content
+      .split(/\r?\n/)
+      .map((line) => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) return line;
+        try {
+          const absolute = new URL(trimmed, sourceUrl).toString();
+          if (!isAbsoluteHttp(absolute)) return line;
+          return proxify(absolute);
+        } catch {
+          return line;
+        }
+      })
+      .join('\n');
+
+  app.get('/api/stream', async (req, res) => {
+    const rawUrl = typeof req.query.url === 'string' ? req.query.url : '';
+    const sourceUrl = decodeURIComponent(rawUrl || '').trim();
+
+    if (!isAbsoluteHttp(sourceUrl)) {
+      res.status(400).json({ error: 'Invalid stream URL' });
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
+
+    try {
+      const upstream = await fetch(sourceUrl, {
+        signal: controller.signal,
+        headers: buildProxyHeaders(
+          sourceUrl,
+          typeof req.headers.range === 'string' ? req.headers.range : '',
+        ),
+      });
+
+      const contentType = upstream.headers.get('content-type') || '';
+      if (contentType.includes('mpegurl') || sourceUrl.toLowerCase().includes('.m3u8')) {
+        const m3u = await upstream.text();
+        const rewritten = rewriteM3U8(m3u, sourceUrl);
+        res.status(upstream.status);
+        res.setHeader('content-type', 'application/vnd.apple.mpegurl');
+        res.setHeader('cache-control', 'no-store');
+        res.send(rewritten);
+        return;
+      }
+
+      const buffer = Buffer.from(await upstream.arrayBuffer());
+      res.status(upstream.status);
+      for (const key of ['content-type', 'accept-ranges', 'content-range', 'content-length']) {
+        const value = upstream.headers.get(key);
+        if (value) res.setHeader(key, value);
+      }
+      res.send(buffer);
+    } catch (error: any) {
+      res.status(502).json({ error: 'Stream proxy failed', details: error?.message || 'Unknown error' });
+    } finally {
+      clearTimeout(timeout);
+    }
+  });
+
   // API route to proxy and parse M3U
   app.get("/api/channels", async (req, res) => {
-    // Changed output to m3u8 for better browser compatibility
-    const m3uUrl = 'http://dnsnexplay.shop/get.php?username=98765683&password=49673688&type=m3u_plus&output=m3u8';
-    
     try {
       console.log("Fetching M3U from IPTV server...");
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
+      const requestedType = (["all", "live", "movie", "series"].includes(String(req.query?.type || "all"))
+        ? String(req.query?.type || "all")
+        : "all") as RequestedType;
+      const candidateUrls = buildCandidateUrls();
+      let lastError = "Falha ao buscar a lista M3U.";
+      let lastTriedUrl = "";
+      let content = "";
 
-      const response = await fetch(m3uUrl, {
-        signal: controller.signal,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36',
-          'Accept': '*/*'
+      for (const url of candidateUrls) {
+        lastTriedUrl = url;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 7000); // 15s timeout
+
+        try {
+          const response = await fetch(url, {
+            signal: controller.signal,
+            headers: {
+              "User-Agent":
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
+              Accept: "*/*",
+            },
+          });
+          clearTimeout(timeout);
+
+          const responseText = await response.text();
+          if (!response.ok) {
+            lastError = `IPTV Server returned ${response.status} para ${url}`;
+            continue;
+          }
+          if (isLikelyNotFoundPage(responseText)) {
+            lastError = `Servidor respondeu NOT_FOUND para ${url}.`;
+            continue;
+          }
+          if (!responseText.includes("#EXTM3U")) {
+            lastError = `Resposta inválida do provedor em ${url} (não retornou M3U).`;
+            continue;
+          }
+
+          content = responseText;
+          console.log(`M3U fetched successfully from ${url} (${content.length} bytes)`);
+          break;
+        } catch (fetchError: any) {
+          clearTimeout(timeout);
+          lastError = fetchError?.message || `Erro de rede ao buscar M3U em ${url}.`;
         }
-      });
-      
-      clearTimeout(timeout);
+      }
+      if (content) {
+        const channels = filterByRequestedType(parseM3U(content), requestedType);
+        if (channels.length > 0) {
+          console.log(`Parsed ${channels.length} channels`);
+          res.json(channels);
+          return;
+        }
+      }
 
-      if (!response.ok) throw new Error(`IPTV Server returned ${response.status}`);
-      
-      const content = await response.text();
-      console.log(`M3U fetched successfully (${content.length} bytes)`);
-      
-      const channels = parseM3U(content);
-      console.log(`Parsed ${channels.length} channels`);
-      
-      res.json(channels);
+      const fallbackUrl = process.env.IPTV_M3U_URL || DEFAULT_IPTV_URL;
+      const m3uFailureContext = `${lastError}${lastTriedUrl ? ` Última tentativa: ${lastTriedUrl}` : ""}`;
+      console.warn(`M3U fetch falhou (${m3uFailureContext}). Tentando fallback Xtream API: ${fallbackUrl}`);
+      const fallbackChannels = await buildChannelsFromXtream(sanitizeUrl(fallbackUrl), requestedType);
+      console.log(`Fallback Xtream retornou ${fallbackChannels.length} itens`);
+      res.json(fallbackChannels);
     } catch (error: any) {
       console.error("Error proxying M3U:", error.message);
       res.status(500).json({ error: "Failed to fetch channels", details: error.message });
