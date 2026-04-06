@@ -11,7 +11,6 @@ interface Channel {
 
 type ContentTab = 'all' | 'live' | 'movie' | 'series';
 
-const CHANNEL_CACHE_KEY = 'iptv_channels_cache_v2';
 const VISIBLE_PAGE_SIZE = 300;
 
 const normalize = (text?: string) => (text || '').toLowerCase();
@@ -93,7 +92,6 @@ export default function Player() {
   const [activeTab, setActiveTab] = useState<ContentTab>('all');
   const [visibleCount, setVisibleCount] = useState(VISIBLE_PAGE_SIZE);
   const [playbackCandidateIndex, setPlaybackCandidateIndex] = useState(0);
-  const [loadedTypes, setLoadedTypes] = useState<Set<ContentTab>>(new Set(['all']));
 
   const apiUrl = '/api/channels';
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -105,20 +103,6 @@ export default function Player() {
   };
 
   useEffect(() => {
-    try {
-      const cached = localStorage.getItem(CHANNEL_CACHE_KEY);
-      if (cached) {
-        const parsed = JSON.parse(cached) as Channel[];
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          const normalizedCache = normalizeChannels(parsed);
-          setChannels(normalizedCache);
-          setInitialChannel(normalizedCache);
-        }
-      }
-    } catch (err) {
-      console.warn('Não foi possível ler cache da lista.', err);
-    }
-
     loadChannels();
   }, []);
 
@@ -153,12 +137,12 @@ export default function Player() {
         const merged = requestedType === 'all' ? normalizedData : [...prev, ...normalizedData];
         const deduped = Array.from(new Map(merged.map((item) => [item.url, item])).values());
         setInitialChannel(deduped);
-        localStorage.setItem(CHANNEL_CACHE_KEY, JSON.stringify(deduped.slice(0, 5000)));
         return deduped;
       });
-      setLoadedTypes((prev) => new Set(prev).add(requestedType));
     } catch (err: any) {
       const message = err?.name === 'AbortError' ? 'Timeout ao carregar lista do servidor.' : err.message;
+      setChannels([]);
+      setCurrentChannel(null);
       setError(`Erro: ${message}. Verifique se sua lista está ativa ou tente novamente.`);
       console.error(err);
     } finally {
@@ -167,12 +151,6 @@ export default function Player() {
   };
 
   const searchNormalized = normalize(searchTerm.trim());
-
-  useEffect(() => {
-    if (activeTab !== 'all' && !loadedTypes.has(activeTab)) {
-      loadChannels(activeTab);
-    }
-  }, [activeTab]);
 
   const filteredChannels = useMemo(() => {
     return channels.filter((channel) => {
