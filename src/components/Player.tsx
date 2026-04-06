@@ -10,6 +10,32 @@ interface Channel {
 }
 
 type ContentTab = 'all' | 'live' | 'movie' | 'series';
+type ChannelApiErrorCode =
+  | 'SERVER_UNAVAILABLE'
+  | 'TIMEOUT'
+  | 'EMPTY_RESPONSE'
+  | 'PARSE_ERROR'
+  | 'INVALID_CREDENTIALS'
+  | 'UPSTREAM_HTTP_ERROR'
+  | 'UNKNOWN_ERROR';
+
+interface ChannelApiSuccess {
+  ok: true;
+  items: Channel[];
+  meta: {
+    requestedType: ContentTab;
+    total: number;
+    generatedAt: string;
+    source: 'm3u' | 'xtream';
+  };
+}
+
+interface ChannelApiError {
+  ok: false;
+  errorCode: ChannelApiErrorCode;
+  message: string;
+  details?: string;
+}
 
 const CHANNEL_CACHE_KEY = 'iptv_channels_cache_v3';
 const VISIBLE_PAGE_SIZE = 300;
@@ -36,6 +62,25 @@ const inferTypeFromText = (channel: Channel): Channel['type'] => {
 
 const normalizeChannels = (items: Channel[]): Channel[] =>
   items.map((item) => ({ ...item, type: inferTypeFromText(item) }));
+
+const mapApiErrorToMessage = (errorCode?: ChannelApiErrorCode, fallback?: string) => {
+  switch (errorCode) {
+    case 'SERVER_UNAVAILABLE':
+      return 'Servidor de lista indisponível no momento.';
+    case 'TIMEOUT':
+      return 'Timeout ao buscar a lista.';
+    case 'EMPTY_RESPONSE':
+      return 'A origem respondeu, mas sem itens válidos.';
+    case 'PARSE_ERROR':
+      return 'A lista veio em formato inválido e não pôde ser parseada.';
+    case 'INVALID_CREDENTIALS':
+      return 'Credenciais inválidas para acessar a lista.';
+    case 'UPSTREAM_HTTP_ERROR':
+      return 'A origem retornou erro HTTP.';
+    default:
+      return fallback || 'Erro desconhecido ao buscar lista.';
+  }
+};
 
 const toProxyUrl = (url: string) => {
   if (url.startsWith('/api/stream?url=')) return url;
@@ -130,24 +175,23 @@ export default function Player() {
       const targetUrl = `${apiUrl}?type=${requestedType}`;
       const response = await fetch(targetUrl, { cache: 'no-store', signal: controller.signal })
         .finally(() => clearTimeout(timeout));
-      if (!response.ok) {
-        const errorRaw = await response.text();
-        let errorMessage = 'Falha ao carregar lista do servidor.';
-        try {
-          const parsedError = JSON.parse(errorRaw);
-          errorMessage = parsedError.details || parsedError.error || errorMessage;
-        } catch {
-          errorMessage = (errorRaw || errorMessage).replace(/\s+/g, ' ').slice(0, 220);
-        }
-        throw new Error(errorMessage);
+      const data = (await response.json()) as ChannelApiSuccess | ChannelApiError;
+
+      if (!response.ok || !data || data.ok === false) {
+        const typedError = data as ChannelApiError;
+        const message = mapApiErrorToMessage(typedError?.errorCode, typedError?.message);
+        throw new Error(message);
       }
 
-      const data = await response.json();
-      if (!Array.isArray(data) || data.length === 0) {
+      if (!Array.isArray(data.items) || data.items.length === 0) {
         throw new Error('Nenhum item disponível no momento.');
       }
 
-      const normalizedData = normalizeChannels(data);
+      const normalizedData = normalizeChannels(data.items);
+      if (normalizedData.length === 0) {
+        throw new Error('Falha na normalização dos itens da lista.');
+      }
+
       setChannels((prev) => {
         const merged = requestedType === 'all' ? normalizedData : [...prev, ...normalizedData];
         const deduped = Array.from(new Map(merged.map((item) => [item.url, item])).values());
