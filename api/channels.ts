@@ -13,6 +13,9 @@ type ErrorCode =
   | "empty_response"
   | "html_instead_of_playlist"
   | "invalid_credentials"
+  | "forbidden"
+  | "endpoint_not_found"
+  | "server_error"
   | "unsupported_format"
   | "parse_error"
   | "upstream_http_error"
@@ -29,11 +32,20 @@ interface ParseDiagnostics {
 
 interface ApiErrorPayload {
   ok: false;
-  errorCode: ErrorCode;
-  reason: string;
+  error: ErrorCode;
+  status?: number;
+  statusText?: string;
   message: string;
-  preview?: string;
-  diagnostics?: ParseDiagnostics;
+  diagnostics?: {
+    responseTime?: number;
+    contentType?: string;
+    contentLength?: string;
+    responseSize?: number;
+    headers?: Record<string, string>;
+    preview?: string;
+  };
+  reason?: string;
+  parseDiagnostics?: ParseDiagnostics;
 }
 
 interface ApiSuccessPayload {
@@ -49,6 +61,13 @@ interface ApiSuccessPayload {
 class ChannelLoadError extends Error {
   code: ErrorCode;
   httpStatus: number;
+  upstreamStatus?: number;
+  upstreamStatusText?: string;
+  upstreamHeaders?: Record<string, string>;
+  responseTimeMs?: number;
+  responseSizeBytes?: number;
+  contentType?: string;
+  contentLength?: string;
   reason: string;
   preview?: string;
   diagnostics?: ParseDiagnostics;
@@ -58,6 +77,13 @@ class ChannelLoadError extends Error {
     message: string;
     reason: string;
     httpStatus?: number;
+    upstreamStatus?: number;
+    upstreamStatusText?: string;
+    upstreamHeaders?: Record<string, string>;
+    responseTimeMs?: number;
+    responseSizeBytes?: number;
+    contentType?: string;
+    contentLength?: string;
     preview?: string;
     diagnostics?: ParseDiagnostics;
   }) {
@@ -66,6 +92,13 @@ class ChannelLoadError extends Error {
     this.code = params.code;
     this.reason = params.reason;
     this.httpStatus = params.httpStatus ?? 500;
+    this.upstreamStatus = params.upstreamStatus;
+    this.upstreamStatusText = params.upstreamStatusText;
+    this.upstreamHeaders = params.upstreamHeaders;
+    this.responseTimeMs = params.responseTimeMs;
+    this.responseSizeBytes = params.responseSizeBytes;
+    this.contentType = params.contentType;
+    this.contentLength = params.contentLength;
     this.preview = params.preview;
     this.diagnostics = params.diagnostics;
   }
@@ -171,6 +204,16 @@ function ensureValidPlaylistBody(body: string, preview: string): void {
   }
 }
 
+function pickMainHeaders(response: Response): Record<string, string> {
+  const main = ["content-type", "content-length", "server", "date", "cache-control", "cf-ray", "via"];
+  const result: Record<string, string> = {};
+  for (const key of main) {
+    const value = response.headers.get(key);
+    if (value) result[key] = value;
+  }
+  return result;
+}
+
 async function fetchWithDiagnostics(url: string, timeoutMs: number) {
   const log = buildLogger("m3u-fetch");
   const controller = new AbortController();
@@ -192,18 +235,23 @@ async function fetchWithDiagnostics(url: string, timeoutMs: number) {
     const responseTimeMs = Date.now() - startedAt;
     const contentType = response.headers.get("content-type") || "";
     const contentLength = response.headers.get("content-length") || String(Buffer.byteLength(body, "utf8"));
+    const responseSizeBytes = Buffer.byteLength(body, "utf8");
     const preview = safePreview(body, PREVIEW_LIMIT);
+    const headers = pickMainHeaders(response);
 
     log({
       url,
       status: response.status,
+      statusText: response.statusText,
       contentType,
       contentLength,
+      responseSizeBytes,
+      headers,
       responseTimeMs,
       preview,
     });
 
-    return { response, body, preview, responseTimeMs, contentType, contentLength };
+    return { response, body, preview, responseTimeMs, contentType, contentLength, responseSizeBytes, headers };
   } catch (error: any) {
     const reason = error?.message || String(error);
     log({ url, failed: true, reason });
@@ -342,14 +390,72 @@ function mapError(error: unknown): ChannelLoadError {
 }
 
 async function resolveChannelsFromSource(sourceUrl: string, requestedType: RequestedType): Promise<NormalizedChannel[]> {
-  const { response, body, preview } = await fetchWithDiagnostics(sourceUrl, M3U_TIMEOUT_MS);
+  const { response, body, preview, responseTimeMs, contentType, contentLength, responseSizeBytes, headers } = await fetchWithDiagnostics(sourceUrl, M3U_TIMEOUT_MS);
 
-  if (response.status === 401 || response.status === 403) {
+  if (response.status === 401) {
     throw new ChannelLoadError({
       code: "invalid_credentials",
-      reason: `upstream respondeu ${response.status}`,
-      message: "Credenciais inválidas",
+      reason: `upstream respondeu ${response.status} ${response.statusText || ""}`.trim(),
+      message: "Credenciais rejeitadas pela origem",
       httpStatus: 401,
+      upstreamStatus: response.status,
+      upstreamStatusText: response.statusText,
+      upstreamHeaders: headers,
+      responseTimeMs,
+      responseSizeBytes,
+      contentType,
+      contentLength,
+      preview,
+    });
+  }
+
+  if (response.status === 403) {
+    throw new ChannelLoadError({
+      code: "forbidden",
+      reason: `upstream respondeu ${response.status} ${response.statusText || ""}`.trim(),
+      message: "Acesso proibido/bloqueado pela origem",
+      httpStatus: 403,
+      upstreamStatus: response.status,
+      upstreamStatusText: response.statusText,
+      upstreamHeaders: headers,
+      responseTimeMs,
+      responseSizeBytes,
+      contentType,
+      contentLength,
+      preview,
+    });
+  }
+
+  if (response.status === 404) {
+    throw new ChannelLoadError({
+      code: "endpoint_not_found",
+      reason: `upstream respondeu ${response.status} ${response.statusText || ""}`.trim(),
+      message: "Endpoint da playlist não encontrado",
+      httpStatus: 404,
+      upstreamStatus: response.status,
+      upstreamStatusText: response.statusText,
+      upstreamHeaders: headers,
+      responseTimeMs,
+      responseSizeBytes,
+      contentType,
+      contentLength,
+      preview,
+    });
+  }
+
+  if (response.status >= 500 && response.status <= 599) {
+    throw new ChannelLoadError({
+      code: "server_error",
+      reason: `upstream respondeu ${response.status} ${response.statusText || ""}`.trim(),
+      message: "Servidor da origem com erro interno",
+      httpStatus: 502,
+      upstreamStatus: response.status,
+      upstreamStatusText: response.statusText,
+      upstreamHeaders: headers,
+      responseTimeMs,
+      responseSizeBytes,
+      contentType,
+      contentLength,
       preview,
     });
   }
@@ -357,9 +463,16 @@ async function resolveChannelsFromSource(sourceUrl: string, requestedType: Reque
   if (!response.ok) {
     throw new ChannelLoadError({
       code: "upstream_http_error",
-      reason: `upstream respondeu ${response.status}`,
+      reason: `upstream respondeu ${response.status} ${response.statusText || ""}`.trim(),
       message: `Servidor da lista retornou ${response.status}`,
       httpStatus: 502,
+      upstreamStatus: response.status,
+      upstreamStatusText: response.statusText,
+      upstreamHeaders: headers,
+      responseTimeMs,
+      responseSizeBytes,
+      contentType,
+      contentLength,
       preview,
     });
   }
@@ -386,11 +499,20 @@ async function resolveChannelsFromSource(sourceUrl: string, requestedType: Reque
 function toApiError(error: ChannelLoadError): ApiErrorPayload {
   return {
     ok: false,
-    errorCode: error.code,
-    reason: error.reason,
+    error: error.code,
+    status: error.upstreamStatus ?? error.httpStatus,
+    statusText: error.upstreamStatusText,
     message: error.message,
-    preview: error.preview,
-    diagnostics: error.diagnostics,
+    diagnostics: {
+      responseTime: error.responseTimeMs,
+      contentType: error.contentType,
+      contentLength: error.contentLength,
+      responseSize: error.responseSizeBytes,
+      headers: error.upstreamHeaders,
+      preview: error.preview?.slice(0, 300),
+    },
+    reason: error.reason,
+    parseDiagnostics: error.diagnostics,
   };
 }
 
@@ -405,7 +527,7 @@ export default async function handler(req: any, res: any) {
   }
 
   if (req.method !== "GET") {
-    res.status(405).json({ ok: false, errorCode: "unknown_error", reason: "method_not_allowed", message: "Method Not Allowed" });
+    res.status(405).json({ ok: false, error: "unknown_error", reason: "method_not_allowed", message: "Method Not Allowed", status: 405 });
     return;
   }
 

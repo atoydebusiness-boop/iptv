@@ -23,6 +23,9 @@ type ChannelApiErrorCode =
   | 'empty_response'
   | 'html_instead_of_playlist'
   | 'invalid_credentials'
+  | 'forbidden'
+  | 'endpoint_not_found'
+  | 'server_error'
   | 'unsupported_format'
   | 'parse_error'
   | 'upstream_http_error'
@@ -47,9 +50,18 @@ interface ChannelApiSuccess {
 
 interface ChannelApiError {
   ok: false;
-  errorCode: ChannelApiErrorCode;
+  error: ChannelApiErrorCode;
+  status?: number;
+  statusText?: string;
   message: string;
   details?: string;
+  diagnostics?: {
+    responseTime?: number;
+    contentType?: string;
+    contentLength?: string;
+    responseSize?: number;
+    preview?: string;
+  };
 }
 
 const CHANNEL_CACHE_KEY = 'iptv_channels_cache_v3';
@@ -99,6 +111,12 @@ const mapApiErrorToMessage = (errorCode?: ChannelApiErrorCode, fallback?: string
     case 'INVALID_CREDENTIALS':
     case 'invalid_credentials':
       return 'Credenciais inválidas para acessar a lista.';
+    case 'forbidden':
+      return 'A origem bloqueou o acesso (403).';
+    case 'endpoint_not_found':
+      return 'Endpoint da playlist não encontrado (404).';
+    case 'server_error':
+      return 'Erro interno no servidor da origem (5xx).';
     case 'UPSTREAM_HTTP_ERROR':
     case 'upstream_http_error':
       return 'A origem retornou erro HTTP.';
@@ -204,7 +222,10 @@ export default function Player() {
 
       if (!response.ok || !data || data.ok === false) {
         const typedError = data as ChannelApiError;
-        const message = mapApiErrorToMessage(typedError?.errorCode, typedError?.message);
+        const messageBase = mapApiErrorToMessage(typedError?.error, typedError?.message);
+        const statusInfo = typedError?.status ? ` [HTTP ${typedError.status}${typedError.statusText ? ` ${typedError.statusText}` : ''}]` : '';
+        const timingInfo = typedError?.diagnostics?.responseTime ? ` (${typedError.diagnostics.responseTime}ms)` : '';
+        const message = `${messageBase}${statusInfo}${timingInfo}`;
         throw new Error(message);
       }
 
