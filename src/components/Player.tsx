@@ -17,11 +17,26 @@ type ChannelApiErrorCode =
   | 'PARSE_ERROR'
   | 'INVALID_CREDENTIALS'
   | 'UPSTREAM_HTTP_ERROR'
-  | 'UNKNOWN_ERROR';
+  | 'UNKNOWN_ERROR'
+  | 'server_unavailable'
+  | 'timeout'
+  | 'empty_response'
+  | 'html_instead_of_playlist'
+  | 'invalid_credentials'
+  | 'unsupported_format'
+  | 'parse_error'
+  | 'upstream_http_error'
+  | 'unknown_error';
 
 interface ChannelApiSuccess {
   ok: true;
-  items: Channel[];
+  items: Array<{
+    id: string;
+    name: string;
+    group: string;
+    url: string;
+    kind: 'live' | 'movie' | 'series' | 'unknown';
+  }>;
   meta: {
     requestedType: ContentTab;
     total: number;
@@ -66,16 +81,26 @@ const normalizeChannels = (items: Channel[]): Channel[] =>
 const mapApiErrorToMessage = (errorCode?: ChannelApiErrorCode, fallback?: string) => {
   switch (errorCode) {
     case 'SERVER_UNAVAILABLE':
+    case 'server_unavailable':
       return 'Servidor de lista indisponível no momento.';
     case 'TIMEOUT':
+    case 'timeout':
       return 'Timeout ao buscar a lista.';
     case 'EMPTY_RESPONSE':
+    case 'empty_response':
       return 'A origem respondeu, mas sem itens válidos.';
+    case 'html_instead_of_playlist':
+      return 'A origem retornou HTML em vez de playlist.';
+    case 'unsupported_format':
+      return 'Formato da resposta não é compatível com M3U.';
     case 'PARSE_ERROR':
+    case 'parse_error':
       return 'A lista veio em formato inválido e não pôde ser parseada.';
     case 'INVALID_CREDENTIALS':
+    case 'invalid_credentials':
       return 'Credenciais inválidas para acessar a lista.';
     case 'UPSTREAM_HTTP_ERROR':
+    case 'upstream_http_error':
       return 'A origem retornou erro HTTP.';
     default:
       return fallback || 'Erro desconhecido ao buscar lista.';
@@ -187,7 +212,14 @@ export default function Player() {
         throw new Error('Nenhum item disponível no momento.');
       }
 
-      const normalizedData = normalizeChannels(data.items);
+      const normalizedData = normalizeChannels(
+        data.items.map((item) => ({
+          name: item.name,
+          group: item.group,
+          url: item.url,
+          type: item.kind,
+        })),
+      );
       if (normalizedData.length === 0) {
         throw new Error('Falha na normalização dos itens da lista.');
       }
