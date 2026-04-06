@@ -208,7 +208,7 @@ async function startServer() {
   const PORT = 3000;
 
   const DEFAULT_IPTV_URL =
-    "http://rozelds.shop:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
+    "http://ryzeeng.pro:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
 
   const sanitizeUrl = (value: string) =>
     value
