@@ -21,60 +21,6 @@ interface XtreamCredentials {
 
 type RequestedType = 'all' | 'live' | 'movie' | 'series';
 
-interface LiveChannel {
-  id: string;
-  name: string;
-  category: string;
-  poster: string;
-  source: string;
-  type: 'live';
-}
-
-interface MovieItem {
-  id: string;
-  name: string;
-  category: string;
-  poster: string;
-  source: string;
-  type: 'movie';
-}
-
-interface SeriesEpisode {
-  id: string;
-  name: string;
-  seasonNumber: number;
-  episodeNumber: number;
-  source: string;
-}
-
-interface SeriesSeason {
-  seasonNumber: number;
-  episodes: SeriesEpisode[];
-}
-
-interface SeriesItem {
-  id: string;
-  name: string;
-  category: string;
-  poster: string;
-  seasons: SeriesSeason[];
-  type: 'series';
-}
-
-interface ParsingDiagnostics {
-  totalReceived: number;
-  totalDiscarded: number;
-  totalByType: Record<'live' | 'movie' | 'series' | 'unknown', number>;
-  discardedReasons: Record<string, number>;
-}
-
-interface NormalizedCatalog {
-  live: LiveChannel[];
-  movies: MovieItem[];
-  series: SeriesItem[];
-  diagnostics: ParsingDiagnostics;
-}
-
 function extractXtreamCredentials(rawUrl: string): XtreamCredentials | null {
   try {
     const parsed = new URL(rawUrl.startsWith("http") ? rawUrl : `http://${rawUrl}`);
@@ -213,6 +159,17 @@ function detectChannelType(channel: Channel): Exclude<Channel['type'], 'unknown'
 function filterByRequestedType(channels: Channel[], requestedType: RequestedType): Channel[] {
   if (requestedType === 'all') return channels;
   return channels.filter((channel) => detectChannelType(channel) === requestedType);
+}
+
+function summarizeTypes(channels: Channel[]) {
+  return channels.reduce(
+    (acc, channel) => {
+      const type = detectChannelType(channel);
+      acc[type] += 1;
+      return acc;
+    },
+    { live: 0, movie: 0, series: 0, unknown: 0 } as Record<'live' | 'movie' | 'series' | 'unknown', number>,
+  );
 }
 
 function parseM3U(content: string): Channel[] {
@@ -418,196 +375,6 @@ async function startServer() {
     return `${parsed.protocol}//${parsed.host}/series/${username}/${password}/${firstEpisode.id}.${ext}`;
   };
 
-  const incrementReason = (map: Record<string, number>, reason: string) => {
-    map[reason] = (map[reason] || 0) + 1;
-  };
-
-  const parseSeasonEpisodeNumbers = (entryName: string, fallbackIndex: number) => {
-    const seasonEpisodeMatch = entryName.match(/[Ss](\d{1,2})[Ee](\d{1,3})/);
-    if (seasonEpisodeMatch) {
-      return {
-        seasonNumber: Number(seasonEpisodeMatch[1]),
-        episodeNumber: Number(seasonEpisodeMatch[2]),
-      };
-    }
-
-    return {
-      seasonNumber: 1,
-      episodeNumber: fallbackIndex + 1,
-    };
-  };
-
-  const normalizeCatalog = async (items: Channel[], sourceUrl: string): Promise<NormalizedCatalog> => {
-    const diagnostics: ParsingDiagnostics = {
-      totalReceived: items.length,
-      totalDiscarded: 0,
-      totalByType: { live: 0, movie: 0, series: 0, unknown: 0 },
-      discardedReasons: {},
-    };
-
-    const live: LiveChannel[] = [];
-    const movies: MovieItem[] = [];
-    const seriesMap = new Map<string, SeriesItem>();
-
-    const creds = extractXtreamCredentials(sourceUrl);
-    const seriesInfoCache = new Map<string, SeriesInfoPayload | null>();
-    const fetchSeriesInfo = async (seriesId: string): Promise<SeriesInfoPayload | null> => {
-      if (!creds) return null;
-      if (seriesInfoCache.has(seriesId)) return seriesInfoCache.get(seriesId) || null;
-
-      const infoUrl = `${creds.baseUrl}/player_api.php?username=${encodeURIComponent(creds.username)}&password=${encodeURIComponent(creds.password)}&action=get_series_info&series_id=${encodeURIComponent(seriesId)}`;
-      try {
-        const payload = await fetchXtreamJson<SeriesInfoPayload>(infoUrl, 10000);
-        seriesInfoCache.set(seriesId, payload);
-        return payload;
-      } catch {
-        seriesInfoCache.set(seriesId, null);
-        return null;
-      }
-    };
-
-    for (const item of items) {
-      const detectedType = detectChannelType(item);
-      diagnostics.totalByType[detectedType] += 1;
-
-      if (detectedType === 'unknown') {
-        diagnostics.totalDiscarded += 1;
-        incrementReason(diagnostics.discardedReasons, 'unknown_type');
-        continue;
-      }
-
-      if (detectedType === 'live') {
-        if (!item.url || !item.name) {
-          diagnostics.totalDiscarded += 1;
-          incrementReason(diagnostics.discardedReasons, 'live_missing_source_or_name');
-          continue;
-        }
-        live.push({
-          id: item.url,
-          name: item.name,
-          category: item.group || 'Ao vivo',
-          poster: '',
-          source: item.url,
-          type: 'live',
-        });
-        continue;
-      }
-
-      if (detectedType === 'movie') {
-        if (!item.url) {
-          diagnostics.totalDiscarded += 1;
-          incrementReason(diagnostics.discardedReasons, 'movie_missing_source');
-          continue;
-        }
-        const movie: MovieItem = {
-          id: item.url,
-          name: item.name?.trim() || 'Filme sem nome',
-          category: item.group?.trim() || 'Filmes',
-          poster: '',
-          source: item.url,
-          type: 'movie',
-        };
-        if (!movie.id || !movie.name || !movie.category || !movie.source) {
-          diagnostics.totalDiscarded += 1;
-          incrementReason(diagnostics.discardedReasons, 'movie_missing_required_fields');
-          continue;
-        }
-        movies.push(movie);
-        continue;
-      }
-
-      const rawSeriesId = item.url.match(/series_id=([^&]+)/i)?.[1] || item.url.match(/\/series\/[^/]+\/[^/]+\/([^/.?]+)/i)?.[1];
-      if (!rawSeriesId) {
-        diagnostics.totalDiscarded += 1;
-        incrementReason(diagnostics.discardedReasons, 'series_missing_series_id');
-        continue;
-      }
-      const seriesId = decodeURIComponent(rawSeriesId);
-      const existing = seriesMap.get(seriesId) || {
-        id: seriesId,
-        name: item.name?.trim() || `Série ${seriesId}`,
-        category: item.group?.trim() || 'Séries',
-        poster: '',
-        seasons: [],
-        type: 'series' as const,
-      };
-
-      const infoPayload = await fetchSeriesInfo(seriesId);
-      if (infoPayload?.episodes && !existing.seasons.length) {
-        const seasons: SeriesSeason[] = [];
-        if (Array.isArray(infoPayload.episodes)) {
-          const seasonEpisodes = infoPayload.episodes
-            .filter((episode) => episode?.id)
-            .map((episode, index) => ({
-              id: String(episode.id),
-              name: `Episódio ${index + 1}`,
-              seasonNumber: 1,
-              episodeNumber: index + 1,
-              source: `${creds?.baseUrl}/series/${creds?.username}/${creds?.password}/${episode.id}.${(episode.container_extension || 'mp4').replace(/[^a-z0-9]/gi, '') || 'mp4'}`,
-            }));
-          if (seasonEpisodes.length) {
-            seasons.push({ seasonNumber: 1, episodes: seasonEpisodes });
-          }
-        } else {
-          const episodesBySeason = infoPayload.episodes as Record<string, SeriesInfoEpisode[] | undefined>;
-          for (const seasonKey of Object.keys(episodesBySeason || {})) {
-            const seasonNumber = Number(seasonKey) || 1;
-            const seasonEpisodesRaw = episodesBySeason?.[seasonKey];
-            if (!Array.isArray(seasonEpisodesRaw)) continue;
-            const seasonEpisodes: SeriesEpisode[] = seasonEpisodesRaw
-              .filter((episode) => episode?.id)
-              .map((episode, index) => ({
-                id: String(episode.id),
-                name: `Episódio ${index + 1}`,
-                seasonNumber,
-                episodeNumber: index + 1,
-                source: `${creds?.baseUrl}/series/${creds?.username}/${creds?.password}/${episode.id}.${(episode.container_extension || 'mp4').replace(/[^a-z0-9]/gi, '') || 'mp4'}`,
-              }));
-            if (seasonEpisodes.length) seasons.push({ seasonNumber, episodes: seasonEpisodes });
-          }
-        }
-        existing.seasons = seasons;
-      }
-
-      if (!existing.seasons.length && item.url) {
-        const parsed = parseSeasonEpisodeNumbers(item.name || '', 0);
-        existing.seasons = [{
-          seasonNumber: parsed.seasonNumber,
-          episodes: [{
-            id: `${seriesId}-${parsed.seasonNumber}-${parsed.episodeNumber}`,
-            name: item.name?.trim() || `Episódio ${parsed.episodeNumber}`,
-            seasonNumber: parsed.seasonNumber,
-            episodeNumber: parsed.episodeNumber,
-            source: item.url,
-          }],
-        }];
-      }
-
-      if (!existing.id || !existing.name || !existing.seasons.length) {
-        diagnostics.totalDiscarded += 1;
-        incrementReason(diagnostics.discardedReasons, 'series_missing_required_fields');
-        continue;
-      }
-      seriesMap.set(seriesId, existing);
-    }
-
-    const normalized: NormalizedCatalog = {
-      live,
-      movies,
-      series: [...seriesMap.values()],
-      diagnostics,
-    };
-
-    console.log(
-      `[catalog] received=${diagnostics.totalReceived} byType=${JSON.stringify(diagnostics.totalByType)} discarded=${diagnostics.totalDiscarded} reasons=${JSON.stringify(diagnostics.discardedReasons)}`,
-    );
-    console.log(
-      `[catalog] output live=${normalized.live.length} movies=${normalized.movies.length} series=${normalized.series.length}`,
-    );
-
-    return normalized;
-  };
-
   app.get('/api/stream', async (req, res) => {
     const rawUrl = typeof req.query.url === 'string' ? req.query.url : '';
     const sourceUrl = decodeURIComponent(rawUrl || '').trim();
@@ -730,33 +497,40 @@ async function startServer() {
       }
       if (content) {
         const parsedChannels = parseM3U(content);
-        const normalized = await normalizeCatalog(parsedChannels, process.env.IPTV_M3U_URL || DEFAULT_IPTV_URL);
-        const filtered: NormalizedCatalog = requestedType === 'all'
-          ? normalized
-          : {
-              ...normalized,
-              live: requestedType === 'live' ? normalized.live : [],
-              movies: requestedType === 'movie' ? normalized.movies : [],
-              series: requestedType === 'series' ? normalized.series : [],
-            };
-        res.json(filtered);
-        return;
+        const parsedSummary = summarizeTypes(parsedChannels);
+        console.log(
+          `[diagnostic][m3u] total=${parsedChannels.length} live=${parsedSummary.live} movie=${parsedSummary.movie} series=${parsedSummary.series} unknown=${parsedSummary.unknown}`,
+        );
+        const channels = filterByRequestedType(parsedChannels, requestedType);
+        const filteredSummary = summarizeTypes(channels);
+        console.log(
+          `[diagnostic][filtered:${requestedType}] total=${channels.length} live=${filteredSummary.live} movie=${filteredSummary.movie} series=${filteredSummary.series} unknown=${filteredSummary.unknown}`,
+        );
+        if (channels.length > 0) {
+          console.log(`Parsed ${channels.length} channels`);
+          res.json(channels);
+          return;
+        }
+
+        if (requestedType !== "all" && parsedChannels.length > 0) {
+          console.log(
+            `Nenhum item classificado como ${requestedType}. Retornando lista completa (${parsedChannels.length}) para fallback no cliente.`,
+          );
+          res.json(parsedChannels);
+          return;
+        }
       }
 
       const fallbackUrl = process.env.IPTV_M3U_URL || DEFAULT_IPTV_URL;
       const m3uFailureContext = `${lastError}${lastTriedUrl ? ` Última tentativa: ${lastTriedUrl}` : ""}`;
       console.warn(`M3U fetch falhou (${m3uFailureContext}). Tentando fallback Xtream API: ${fallbackUrl}`);
       const fallbackChannels = await buildChannelsFromXtream(sanitizeUrl(fallbackUrl), requestedType);
-      const normalizedFallback = await normalizeCatalog(fallbackChannels, fallbackUrl);
-      const filteredFallback: NormalizedCatalog = requestedType === 'all'
-        ? normalizedFallback
-        : {
-            ...normalizedFallback,
-            live: requestedType === 'live' ? normalizedFallback.live : [],
-            movies: requestedType === 'movie' ? normalizedFallback.movies : [],
-            series: requestedType === 'series' ? normalizedFallback.series : [],
-          };
-      res.json(filteredFallback);
+      const fallbackSummary = summarizeTypes(fallbackChannels);
+      console.log(
+        `[diagnostic][xtream-fallback:${requestedType}] total=${fallbackChannels.length} live=${fallbackSummary.live} movie=${fallbackSummary.movie} series=${fallbackSummary.series} unknown=${fallbackSummary.unknown}`,
+      );
+      console.log(`Fallback Xtream retornou ${fallbackChannels.length} itens`);
+      res.json(fallbackChannels);
     } catch (error: any) {
       console.error("Error proxying M3U:", error.message);
       res.status(500).json({ error: "Failed to fetch channels", details: error.message });
