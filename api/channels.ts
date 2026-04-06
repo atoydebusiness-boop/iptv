@@ -17,6 +17,12 @@ const DEFAULT_IPTV_URL =
   "http://ryzeeng.pro:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
 
 const sanitizeUrl = (value: string) => value.replace(/\n/g, "").replace(/\r/g, "").trim();
+const SERIES_KEYWORDS = ['series', 'série', 'tv shows', 'season', 'temporada'];
+
+const hasSeriesKeyword = (value: string) => {
+  const normalized = value.toLowerCase();
+  return SERIES_KEYWORDS.some((keyword) => normalized.includes(keyword));
+};
 
 function parseM3U(content: string): Channel[] {
   const lines = content.split(/\r?\n/);
@@ -38,10 +44,11 @@ function parseM3U(content: string): Channel[] {
       currentGroup = groupMatch?.[1]?.trim() || "";
     } else if (line.startsWith("http")) {
       const normalizedUrl = line.toLowerCase();
+      const metadata = `${currentName} ${currentGroup}`.toLowerCase();
       let type: Channel["type"] = "unknown";
-      if (normalizedUrl.includes("/live/")) type = "live";
+      if (normalizedUrl.includes("/series/") || hasSeriesKeyword(metadata)) type = "series";
+      else if (normalizedUrl.includes("/live/")) type = "live";
       else if (normalizedUrl.includes("/movie/")) type = "movie";
-      else if (normalizedUrl.includes("/series/")) type = "series";
 
       channels.push({
         name: currentName || "Canal Sem Nome",
@@ -62,7 +69,7 @@ function detectChannelType(channel: Channel): Exclude<Channel['type'], 'unknown'
   if (channel.type && channel.type !== 'unknown') return channel.type;
 
   const haystack = `${channel.name || ''} ${channel.group || ''} ${channel.url || ''}`.toLowerCase();
-  if (haystack.includes('/series/') || haystack.includes('series') || haystack.includes('temporada')) return 'series';
+  if (haystack.includes('/series/') || hasSeriesKeyword(haystack)) return 'series';
   if (haystack.includes('/movie/') || haystack.includes('filme') || haystack.includes('vod')) return 'movie';
   if (haystack.includes('/live/') || haystack.includes('ao vivo') || haystack.includes('canal')) return 'live';
   return 'unknown';

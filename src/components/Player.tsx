@@ -21,7 +21,7 @@ const inferTypeFromText = (channel: Channel): Channel['type'] => {
 
   const haystack = `${normalize(channel.name)} ${normalize(channel.group)} ${normalize(channel.url)}`;
 
-  if (haystack.includes('/series/') || haystack.includes('série') || haystack.includes('series') || haystack.includes('temporada') || haystack.includes('season')) {
+  if (haystack.includes('/series/') || haystack.includes('série') || haystack.includes('series') || haystack.includes('temporada') || haystack.includes('season') || haystack.includes('tv shows')) {
     return 'series';
   }
   if (haystack.includes('/movie/') || haystack.includes('filme') || haystack.includes('movie') || haystack.includes('vod')) {
