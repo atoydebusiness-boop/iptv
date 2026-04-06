@@ -120,7 +120,7 @@ function extractXtreamCredentials(rawUrl: string): XtreamCredentials | null {
   }
 }
 
-async function fetchXtreamJson<T>(url: string, timeoutMs = 7000): Promise<T> {
+async function fetchXtreamJson<T>(url: string, timeoutMs = 20000): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -261,13 +261,18 @@ async function resolveChannels(sourceUrl: string, requestedType: RequestedType):
     }
   };
 
-  const settled = await Promise.allSettled(candidateUrls.map((url) => fetchCandidate(url)));
-  for (const result of settled) {
-    if (result.status === "fulfilled" && result.value.length > 0) {
-      return result.value;
-    }
-    if (result.status === "rejected") {
-      lastError = result.reason?.message || String(result.reason);
+  try {
+    return await Promise.any(candidateUrls.map((url) => fetchCandidate(url)));
+  } catch (error: any) {
+    if (error instanceof AggregateError && Array.isArray(error.errors)) {
+      const reasons = error.errors
+        .map((reason) => reason?.message || String(reason))
+        .filter(Boolean);
+      if (reasons.length > 0) {
+        lastError = reasons[reasons.length - 1];
+      }
+    } else {
+      lastError = error?.message || String(error);
     }
   }
 
