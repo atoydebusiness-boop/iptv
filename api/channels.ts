@@ -111,8 +111,7 @@ const PLAYLIST_SOURCE_URL =
 const M3U_TIMEOUT_MS = 20000;
 const PREVIEW_LIMIT = 500;
 const CACHE_TTL_MS = 2 * 60 * 1000;
-const MAX_RETRIES_429 = 2;
-const BASE_BACKOFF_MS = 1000;
+const RETRY_DELAYS_MS = [2000, 5000, 10000];
 
 type CacheState = {
   items: NormalizedChannel[];
@@ -302,36 +301,71 @@ function parseRetryAfterSeconds(value: string | null): number | null {
 
 async function fetchPlaylistWithRetry(url: string) {
   let lastResponse: Awaited<ReturnType<typeof fetchWithDiagnostics>> | null = null;
+  let lastTimeoutError: ChannelLoadError | null = null;
+  const maxAttempts = RETRY_DELAYS_MS.length + 1;
 
-  for (let attempt = 1; attempt <= MAX_RETRIES_429 + 1; attempt++) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     originCallCount += 1;
-    const responsePack = await fetchWithDiagnostics(url, M3U_TIMEOUT_MS);
-    lastResponse = responsePack;
+    try {
+      const responsePack = await fetchWithDiagnostics(url, M3U_TIMEOUT_MS);
+      lastResponse = responsePack;
+      const status = responsePack.response.status;
 
-    if (responsePack.response.status !== 429) {
-      return responsePack;
-    }
+      const isRateLimited = status === 429;
+      const isGatewayTimeout = status === 504;
+      if (!isRateLimited && !isGatewayTimeout) {
+        return responsePack;
+      }
 
-    const retryAfterSeconds = parseRetryAfterSeconds(responsePack.response.headers.get("retry-after"));
-    const backoffMs = retryAfterSeconds != null ? retryAfterSeconds * 1000 : BASE_BACKOFF_MS * attempt;
+      const retryAfterSeconds = parseRetryAfterSeconds(responsePack.response.headers.get("retry-after"));
+      const delayFromPolicy = RETRY_DELAYS_MS[Math.max(0, attempt - 1)] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1];
+      const backoffMs = retryAfterSeconds != null ? retryAfterSeconds * 1000 : delayFromPolicy;
 
-    console.warn(
-      JSON.stringify({
-        scope: "playlist-rate-limit",
-        attempt,
-        maxAttempts: MAX_RETRIES_429 + 1,
-        retryAfterSeconds,
-        backoffMs,
-      }),
-    );
+      console.warn(
+        JSON.stringify({
+          scope: "playlist-retry",
+          reason: isRateLimited ? "http_429" : "http_504",
+          attempt,
+          maxAttempts,
+          retryAfterSeconds,
+          backoffMs,
+        }),
+      );
 
-    if (attempt <= MAX_RETRIES_429) {
-      await wait(backoffMs);
-      continue;
+      if (attempt < maxAttempts) {
+        await wait(backoffMs);
+      }
+    } catch (error) {
+      const mapped = mapError(error);
+      lastTimeoutError = mapped.code === "timeout" ? mapped : null;
+
+      console.warn(
+        JSON.stringify({
+          scope: "playlist-retry",
+          reason: mapped.code,
+          attempt,
+          maxAttempts,
+        }),
+      );
+
+      if (mapped.code === "timeout" && attempt < maxAttempts) {
+        const backoffMs = RETRY_DELAYS_MS[Math.max(0, attempt - 1)] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1];
+        await wait(backoffMs);
+        continue;
+      }
+
+      throw mapped;
     }
   }
 
-  return lastResponse!;
+  if (lastResponse) return lastResponse;
+  if (lastTimeoutError) throw lastTimeoutError;
+  throw new ChannelLoadError({
+    code: "timeout",
+    reason: "origem não respondeu após retries",
+    message: "A origem demorou para responder (HTTP 504). Tente novamente mais tarde.",
+    httpStatus: 504,
+  });
 }
 
 function parseM3UTolerant(content: string): { items: NormalizedChannel[]; diagnostics: ParseDiagnostics } {
@@ -526,6 +560,23 @@ async function resolveChannelsFromSource(sourceUrl: string, requestedType: Reque
     });
   }
 
+  if (response.status === 504) {
+    throw new ChannelLoadError({
+      code: "timeout",
+      reason: `upstream respondeu ${response.status} ${response.statusText || ""}`.trim(),
+      message: "A origem demorou para responder (HTTP 504). Tente novamente mais tarde.",
+      httpStatus: 504,
+      upstreamStatus: response.status,
+      upstreamStatusText: response.statusText,
+      upstreamHeaders: headers,
+      responseTimeMs,
+      responseSizeBytes,
+      contentType,
+      contentLength,
+      preview,
+    });
+  }
+
   if (response.status >= 500 && response.status <= 599) {
     throw new ChannelLoadError({
       code: "server_error",
@@ -663,10 +714,10 @@ export default async function handler(req: any, res: any) {
     return;
   } catch (error) {
     const mapped = mapError(error);
-    if (mapped.code === "rate_limited" && cacheState?.items?.length) {
+    if ((mapped.code === "rate_limited" || mapped.code === "timeout") && cacheState?.items?.length) {
       const cachedItems = filterByRequestedType(cacheState.items, requestedType);
       if (cachedItems.length > 0) {
-        console.warn(JSON.stringify({ scope: "playlist-cache", staleServed: true, reason: "rate_limited", originCallCount, duplicateRequestCount }));
+        console.warn(JSON.stringify({ scope: "playlist-cache", staleServed: true, reason: mapped.code, originCallCount, duplicateRequestCount }));
         res.status(200).json({
           ok: true,
           items: cachedItems,

@@ -98,7 +98,7 @@ const mapApiErrorToMessage = (errorCode?: ChannelApiErrorCode, fallback?: string
       return 'Servidor de lista indisponível no momento.';
     case 'TIMEOUT':
     case 'timeout':
-      return 'Timeout ao buscar a lista.';
+      return 'A origem demorou para responder (HTTP 504). Tente novamente mais tarde.';
     case 'rate_limited':
       return 'A origem limitou temporariamente as requisições (HTTP 429). A lista pode estar ativa, mas o servidor bloqueou excesso de acessos.';
     case 'EMPTY_RESPONSE':
@@ -431,7 +431,15 @@ export default function Player() {
             {error && (
               <div className="flex items-center gap-2 p-4 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl">
                 <AlertCircle className="w-5 h-5 shrink-0" />
-                <p className="text-sm">{error}</p>
+                <div className="flex-1 flex items-center justify-between gap-3">
+                  <p className="text-sm">{error}</p>
+                  <button
+                    onClick={() => loadChannels('all')}
+                    className="text-xs px-3 py-1 rounded border border-red-400/30 hover:bg-red-500/10 transition-colors"
+                  >
+                    Tentar novamente
+                  </button>
+                </div>
               </div>
             )}
 
