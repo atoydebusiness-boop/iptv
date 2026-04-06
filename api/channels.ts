@@ -221,7 +221,7 @@ async function resolveChannels(sourceUrls: string[], requestedType: RequestedTyp
 
   const fetchCandidate = async (url: string) => {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
+    const timeout = setTimeout(() => controller.abort(), 20000);
 
     try {
       const response = await fetch(url, {
@@ -258,22 +258,23 @@ async function resolveChannels(sourceUrls: string[], requestedType: RequestedTyp
     }
   };
 
-  for (const sourceUrl of sourceUrls) {
-    const candidateUrls = buildCandidateUrls(sourceUrl);
-    if (candidateUrls.length === 0) continue;
-    try {
-      return await Promise.any(candidateUrls.map((url) => fetchCandidate(url)));
-    } catch (error: any) {
-      if (error instanceof AggregateError && Array.isArray(error.errors)) {
-        const reasons = error.errors
-          .map((reason) => reason?.message || String(reason))
-          .filter(Boolean);
-        if (reasons.length > 0) {
-          lastError = reasons[reasons.length - 1];
-        }
-      } else {
-        lastError = error?.message || String(error);
+  const allCandidates = sourceUrls.flatMap((sourceUrl) => buildCandidateUrls(sourceUrl));
+  if (allCandidates.length === 0) {
+    throw new Error("Nenhuma URL de lista válida configurada.");
+  }
+
+  try {
+    return await Promise.any(allCandidates.map((url) => fetchCandidate(url)));
+  } catch (error: any) {
+    if (error instanceof AggregateError && Array.isArray(error.errors)) {
+      const reasons = error.errors
+        .map((reason) => reason?.message || String(reason))
+        .filter(Boolean);
+      if (reasons.length > 0) {
+        lastError = reasons[reasons.length - 1];
       }
+    } else {
+      lastError = error?.message || String(error);
     }
   }
 
