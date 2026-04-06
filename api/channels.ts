@@ -13,16 +13,73 @@ interface XtreamCredentials {
 
 type RequestedType = 'all' | 'live' | 'movie' | 'series';
 
+type ChannelsApiResponse = {
+  ok: true;
+  stale: boolean;
+  items: Channel[];
+  source: 'origin' | 'cache';
+  generatedAt: string;
+};
+
+type CacheEntry = {
+  items: Channel[];
+  updatedAt: number;
+};
+
 const DEFAULT_IPTV_URL =
   "http://ryzeeng.pro:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
+const REQUEST_TIMEOUT_MS = 20_000;
+const CACHE_TTL_MS = 5 * 60 * 1000;
+const RETRY_BACKOFF_MS = [2000, 5000, 10000] as const;
 
 const sanitizeUrl = (value: string) => value.replace(/\n/g, "").replace(/\r/g, "").trim();
 const SERIES_KEYWORDS = ['series', 'série', 'tv shows', 'season', 'temporada'];
+
+const inMemoryCache = new Map<RequestedType, CacheEntry>();
+const inFlightByType = new Map<RequestedType, Promise<CacheEntry>>();
 
 const hasSeriesKeyword = (value: string) => {
   const normalized = value.toLowerCase();
   return SERIES_KEYWORDS.some((keyword) => normalized.includes(keyword));
 };
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function getCacheState(requestedType: RequestedType) {
+  const entry = inMemoryCache.get(requestedType);
+  if (!entry) return { valid: null as CacheEntry | null, stale: null as CacheEntry | null };
+
+  const age = Date.now() - entry.updatedAt;
+  if (age <= CACHE_TTL_MS) {
+    return { valid: entry, stale: entry };
+  }
+
+  return { valid: null, stale: entry };
+}
+
+function updateCache(requestedType: RequestedType, items: Channel[]): CacheEntry {
+  const entry = { items, updatedAt: Date.now() };
+  inMemoryCache.set(requestedType, entry);
+  if (requestedType === 'all') {
+    inMemoryCache.set('live', {
+      items: filterByRequestedType(items, 'live'),
+      updatedAt: entry.updatedAt,
+    });
+    inMemoryCache.set('movie', {
+      items: filterByRequestedType(items, 'movie'),
+      updatedAt: entry.updatedAt,
+    });
+    inMemoryCache.set('series', {
+      items: filterByRequestedType(items, 'series'),
+      updatedAt: entry.updatedAt,
+    });
+  }
+  return entry;
+}
 
 function parseM3U(content: string): Channel[] {
   const lines = content.split(/\r?\n/);
@@ -63,7 +120,6 @@ function parseM3U(content: string): Channel[] {
 
   return channels;
 }
-
 
 function detectChannelType(channel: Channel): Exclude<Channel['type'], 'unknown'> | 'unknown' {
   if (channel.type && channel.type !== 'unknown') return channel.type;
@@ -127,11 +183,12 @@ function extractXtreamCredentials(rawUrl: string): XtreamCredentials | null {
   }
 }
 
-async function fetchXtreamJson<T>(url: string, timeoutMs = 7000): Promise<T> {
+async function fetchXtreamJson<T>(url: string, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
+    const startedAt = Date.now();
     const response = await fetch(url, {
       signal: controller.signal,
       headers: {
@@ -145,6 +202,8 @@ async function fetchXtreamJson<T>(url: string, timeoutMs = 7000): Promise<T> {
     if (!response.ok) throw new Error(`Xtream API retornou ${response.status}`);
 
     const payload = (await response.text()).trim();
+    const elapsed = Date.now() - startedAt;
+    console.info(`[channels] xtream elapsedMs=${elapsed} status=${response.status} bytes=${payload.length} url=${url}`);
     if (!payload) throw new Error("Xtream API retornou vazio.");
     return JSON.parse(payload) as T;
   } finally {
@@ -202,7 +261,6 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
     }
   }
 
-
   if (seriesItems.status === "fulfilled" && Array.isArray(seriesItems.value)) {
     for (const item of seriesItems.value) {
       if (!item?.series_id) continue;
@@ -225,62 +283,80 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
   return channels;
 }
 
-async function resolveChannels(sourceUrl: string, requestedType: RequestedType): Promise<Channel[]> {
+async function fetchChannelsFromOrigin(sourceUrl: string, requestedType: RequestedType): Promise<Channel[]> {
   const candidateUrls = buildCandidateUrls(sourceUrl);
   let lastError = "Falha ao buscar a lista M3U.";
   let lastTriedUrl = "";
 
   for (const url of candidateUrls) {
-    lastTriedUrl = url;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 7000);
+    for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt += 1) {
+      lastTriedUrl = url;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      const startedAt = Date.now();
 
-    try {
-      const response = await fetch(url, {
-        signal: controller.signal,
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-          Accept: "*/*",
-          "Cache-Control": "no-cache",
-        },
-      });
+      try {
+        const response = await fetch(url, {
+          signal: controller.signal,
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            Accept: "*/*",
+            "Cache-Control": "no-cache",
+          },
+        });
 
-      const responseText = await response.text();
+        const responseText = await response.text();
+        const elapsed = Date.now() - startedAt;
+        console.info(`[channels] origin elapsedMs=${elapsed} status=${response.status} cache=miss bytes=${responseText.length} url=${url} attempt=${attempt + 1}`);
 
-      if (!response.ok) {
-        lastError = `IPTV Server returned ${response.status} para ${url}`;
-        continue;
+        if (!response.ok) {
+          lastError = `IPTV Server returned ${response.status} para ${url}`;
+          throw new Error(lastError);
+        }
+        if (isLikelyNotFoundPage(responseText)) {
+          lastError = `Servidor respondeu NOT_FOUND para ${url}`;
+          throw new Error(lastError);
+        }
+        if (!responseText.includes("#EXTM3U")) {
+          lastError = `Resposta inválida em ${url} (não retornou M3U).`;
+          throw new Error(lastError);
+        }
+
+        const parsedChannels = parseM3U(responseText);
+        const channels = filterByRequestedType(parsedChannels, requestedType);
+        if (channels.length > 0) return channels;
+
+        if (requestedType !== "all" && parsedChannels.length > 0) {
+          return parsedChannels;
+        }
+
+        lastError = `M3U sem itens reproduzíveis em ${url}.`;
+        throw new Error(lastError);
+      } catch (err: any) {
+        lastError = err?.name === 'AbortError'
+          ? `Timeout (${REQUEST_TIMEOUT_MS}ms) ao buscar ${url}`
+          : err?.message || `Erro de rede ao buscar ${url}`;
+
+        const backoff = RETRY_BACKOFF_MS[attempt];
+        if (backoff) {
+          console.warn(`[channels] origin retry em ${backoff}ms (${attempt + 1}/${RETRY_BACKOFF_MS.length + 1}) motivo=${lastError}`);
+          await sleep(backoff);
+        }
+      } finally {
+        clearTimeout(timeout);
       }
-      if (isLikelyNotFoundPage(responseText)) {
-        lastError = `Servidor respondeu NOT_FOUND para ${url}`;
-        continue;
-      }
-      if (!responseText.includes("#EXTM3U")) {
-        lastError = `Resposta inválida em ${url} (não retornou M3U).`;
-        continue;
-      }
-
-      const parsedChannels = parseM3U(responseText);
-      const channels = filterByRequestedType(parsedChannels, requestedType);
-      if (channels.length > 0) return channels;
-
-      if (requestedType !== "all" && parsedChannels.length > 0) {
-        return parsedChannels;
-      }
-
-      lastError = `M3U sem itens reproduzíveis em ${url}.`;
-    } catch (err: any) {
-      lastError = err?.message || `Erro de rede ao buscar ${url}`;
-    } finally {
-      clearTimeout(timeout);
     }
   }
 
   const failureContext = `${lastError}${lastTriedUrl ? ` | Última tentativa: ${lastTriedUrl}` : ""}`;
   console.warn(`M3U falhou: ${failureContext}. Tentando Xtream API...`);
-
   return buildChannelsFromXtream(sourceUrl, requestedType);
+}
+
+async function loadAndCache(sourceUrl: string, requestedType: RequestedType) {
+  const resolved = await fetchChannelsFromOrigin(sourceUrl, requestedType);
+  return updateCache(requestedType, resolved);
 }
 
 export default async function handler(req: any, res: any) {
@@ -298,18 +374,92 @@ export default async function handler(req: any, res: any) {
     return;
   }
 
-  try {
-    const requestedType = (["all", "live", "movie", "series"].includes(String(req.query?.type || "all"))
-      ? String(req.query?.type || "all")
-      : "all") as RequestedType;
+  const requestedType = (["all", "live", "movie", "series"].includes(String(req.query?.type || "all"))
+    ? String(req.query?.type || "all")
+    : "all") as RequestedType;
 
-    const sourceUrl = sanitizeUrl(process.env.IPTV_M3U_URL || DEFAULT_IPTV_URL);
-    const channels = await resolveChannels(sourceUrl, requestedType);
-    res.status(200).json(channels);
+  const sourceUrl = sanitizeUrl(process.env.IPTV_M3U_URL || DEFAULT_IPTV_URL);
+  const cacheState = getCacheState(requestedType);
+
+  if (cacheState.valid) {
+    const ageMs = Date.now() - cacheState.valid.updatedAt;
+    console.info(`[channels] cache=hit type=${requestedType} ageMs=${ageMs} items=${cacheState.valid.items.length}`);
+    const payload: ChannelsApiResponse = {
+      ok: true,
+      stale: false,
+      items: cacheState.valid.items,
+      source: 'cache',
+      generatedAt: nowIso(),
+    };
+    res.status(200).json(payload);
+    return;
+  }
+
+  const inFlight = inFlightByType.get(requestedType);
+  if (inFlight) {
+    console.info(`[channels] lock=reused type=${requestedType}`);
+    try {
+      const fromInflight = await inFlight;
+      const payload: ChannelsApiResponse = {
+        ok: true,
+        stale: false,
+        items: fromInflight.items,
+        source: 'origin',
+        generatedAt: nowIso(),
+      };
+      res.status(200).json(payload);
+      return;
+    } catch {
+      if (cacheState.stale?.items?.length) {
+        const payload: ChannelsApiResponse = {
+          ok: true,
+          stale: true,
+          items: cacheState.stale.items,
+          source: 'cache',
+          generatedAt: nowIso(),
+        };
+        res.status(200).json(payload);
+        return;
+      }
+    }
+  }
+
+  const requestPromise = loadAndCache(sourceUrl, requestedType);
+  inFlightByType.set(requestedType, requestPromise);
+
+  try {
+    const refreshed = await requestPromise;
+    const payload: ChannelsApiResponse = {
+      ok: true,
+      stale: false,
+      items: refreshed.items,
+      source: 'origin',
+      generatedAt: nowIso(),
+    };
+    res.status(200).json(payload);
   } catch (error: any) {
-    res.status(500).json({
-      error: "Failed to fetch channels",
-      details: error?.message || "Erro desconhecido",
-    });
+    console.error(`[channels] origin_failed type=${requestedType} reason=${error?.message || 'unknown'}`);
+
+    if (cacheState.stale?.items?.length) {
+      const payload: ChannelsApiResponse = {
+        ok: true,
+        stale: true,
+        items: cacheState.stale.items,
+        source: 'cache',
+        generatedAt: nowIso(),
+      };
+      res.status(200).json(payload);
+      return;
+    }
+
+    res.status(200).json({
+      ok: true,
+      stale: true,
+      items: [],
+      source: 'cache',
+      generatedAt: nowIso(),
+    } satisfies ChannelsApiResponse);
+  } finally {
+    inFlightByType.delete(requestedType);
   }
 }

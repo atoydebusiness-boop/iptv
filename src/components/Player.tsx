@@ -8,6 +8,13 @@ interface Channel {
   group?: string;
   type?: 'live' | 'movie' | 'series' | 'unknown';
 }
+interface ChannelsApiResponse {
+  ok: true;
+  stale: boolean;
+  items: Channel[];
+  source?: 'origin' | 'cache';
+  generatedAt?: string;
+}
 
 interface SeriesEpisode {
   id: string;
@@ -132,6 +139,7 @@ export default function Player() {
   const [currentChannel, setCurrentChannel] = useState<Channel | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [cacheNotice, setCacheNotice] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [activeTab, setActiveTab] = useState<ContentTab>('all');
   const [visibleCount, setVisibleCount] = useState(VISIBLE_PAGE_SIZE);
@@ -213,6 +221,7 @@ export default function Player() {
   const loadChannels = async (requestedType: ContentTab = "all") => {
     setLoading(true);
     setError('');
+    setCacheNotice('');
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 20000);
@@ -232,11 +241,20 @@ export default function Player() {
       }
 
       const data = await response.json();
-      if (!Array.isArray(data) || data.length === 0) {
+      const payload = Array.isArray(data)
+        ? ({ ok: true, stale: false, items: data } satisfies ChannelsApiResponse)
+        : (data as ChannelsApiResponse);
+      const incomingItems = Array.isArray(payload?.items) ? payload.items : [];
+
+      if (incomingItems.length === 0) {
+        if (channels.length > 0) {
+          setCacheNotice('Lista carregada com dados em cache');
+          return;
+        }
         throw new Error('Nenhum item disponível no momento.');
       }
 
-      const normalizedData = normalizeChannels(data);
+      const normalizedData = normalizeChannels(incomingItems);
       setChannels((prev) => {
         const merged = requestedType === 'all' ? normalizedData : [...prev, ...normalizedData];
         const deduped = Array.from(new Map(merged.map((item) => [item.url, item])).values());
@@ -244,10 +262,18 @@ export default function Player() {
         localStorage.setItem(CHANNEL_CACHE_KEY, JSON.stringify(deduped.slice(0, 5000)));
         return deduped;
       });
+
+      if (payload.stale) {
+        setCacheNotice('Lista carregada com dados em cache');
+      }
       setLoadedTypes((prev) => new Set(prev).add(requestedType));
     } catch (err: any) {
       const message = err?.name === 'AbortError' ? 'Timeout ao carregar lista do servidor.' : err.message;
-      setError(`Erro: ${message}. Verifique se sua lista está ativa ou tente novamente.`);
+      if (channels.length > 0) {
+        setCacheNotice('Lista carregada com dados em cache');
+      } else {
+        setError(`Erro: ${message}. Verifique se sua lista está ativa ou tente novamente.`);
+      }
       console.error(err);
     } finally {
       setLoading(false);
@@ -548,6 +574,13 @@ export default function Player() {
               <div className="flex items-center gap-2 p-4 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl">
                 <AlertCircle className="w-5 h-5 shrink-0" />
                 <p className="text-sm">{error}</p>
+              </div>
+            )}
+
+            {cacheNotice && (
+              <div className="flex items-center gap-2 p-4 bg-yellow-500/10 border border-yellow-500/20 text-yellow-300 rounded-xl">
+                <AlertCircle className="w-5 h-5 shrink-0" />
+                <p className="text-sm">{cacheNotice}</p>
               </div>
             )}
 
