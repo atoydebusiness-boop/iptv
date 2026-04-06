@@ -9,6 +9,8 @@ import Hero from './components/Hero';
 import Player from './components/Player';
 import Pricing from './components/Pricing';
 import WhatsAppButton from './components/WhatsAppButton';
+import ConversionPopup from './components/ConversionPopup';
+import UsageLockOverlay from './components/UsageLockOverlay';
 
 export default function App() {
   return (
@@ -40,6 +42,8 @@ export default function App() {
       </footer>
 
       <WhatsAppButton />
+      <ConversionPopup />
+      <UsageLockOverlay />
     </div>
   );
 }
