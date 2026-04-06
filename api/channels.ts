@@ -17,6 +17,7 @@ const DEFAULT_IPTV_URL =
   "http://rozelds.shop:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
 const FALLBACK_IPTV_URL =
   "http://rozelds.shop:80/get.php?username=462763&password=322879&type=m3u_plus&output=mpegts";
+const LOCKED_SOURCE_URLS = [DEFAULT_IPTV_URL, FALLBACK_IPTV_URL] as const;
 const CHANNEL_CACHE_TTL_MS = 2 * 60 * 1000;
 
 const sanitizeUrl = (value: string) => value.replace(/\n/g, "").replace(/\r/g, "").trim();
@@ -87,33 +88,12 @@ function filterByRequestedType(channels: Channel[], requestedType: RequestedType
 function buildCandidateUrls(rawUrl: string): string[] {
   const cleaned = sanitizeUrl(rawUrl);
   if (!cleaned) return [];
-
-  const candidates = new Set<string>();
-  try {
-    const parsed = new URL(cleaned.startsWith("http") ? cleaned : `http://${cleaned}`);
-    const output = (parsed.searchParams.get("output") || "hls").toLowerCase();
-    const outputs = output === "mpegts" ? ["mpegts", "hls"] : ["hls", "mpegts"];
-
-    for (const out of outputs) {
-      parsed.searchParams.set("output", out);
-      candidates.add(parsed.toString());
-    }
-  } catch {
-    candidates.add(cleaned);
-  }
-
-  return [...candidates];
+  return [cleaned];
 }
 
 function parseSourceUrls(input?: string): string[] {
-  const raw = String(input || "")
-    .replace(/\\n/g, "\n")
-    .split(/\r?\n/)
-    .map((item) => sanitizeUrl(item))
-    .filter(Boolean);
-
-  if (raw.length > 0) return raw;
-  return [DEFAULT_IPTV_URL, FALLBACK_IPTV_URL];
+  void input;
+  return [...LOCKED_SOURCE_URLS];
 }
 
 const isLikelyNotFoundPage = (content: string) => {
@@ -297,19 +277,7 @@ async function resolveChannels(sourceUrls: string[], requestedType: RequestedTyp
     }
   }
 
-  const primarySource = sourceUrls[0] || DEFAULT_IPTV_URL;
-  if (lastError.includes(" 429 ")) {
-    throw new Error(lastError);
-  }
-
-  console.warn(`M3U falhou: ${lastError}. Tentando Xtream API...`);
-
-  try {
-    return await buildChannelsFromXtream(primarySource, requestedType);
-  } catch (xtreamError: any) {
-    const xtreamMessage = xtreamError?.message || "Erro desconhecido no fallback Xtream.";
-    throw new Error(`${lastError} | Xtream fallback: ${xtreamMessage}`);
-  }
+  throw new Error(lastError);
 }
 
 function isCacheFresh(cache: ChannelCacheState | null) {
