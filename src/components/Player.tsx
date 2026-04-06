@@ -153,7 +153,10 @@ export default function Player() {
         return deduped;
       });
     } catch (err: any) {
-      const message = err?.name === 'AbortError' ? 'Timeout ao carregar lista do servidor.' : err.message;
+      const rawMessage = err?.name === 'AbortError' ? 'Timeout ao carregar lista do servidor.' : String(err?.message || '');
+      const message = /operation was aborted|aborterror|aborted/i.test(rawMessage)
+        ? 'A origem da lista não respondeu a tempo (timeout/bloqueio temporário).'
+        : rawMessage;
       setError(`Erro: ${message}. Verifique se sua lista está ativa ou tente novamente.`);
       console.error(err);
     } finally {

@@ -220,42 +220,34 @@ async function resolveChannels(sourceUrls: string[], requestedType: RequestedTyp
   let lastError = "Falha ao buscar a lista M3U.";
 
   const fetchCandidate = async (url: string) => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 45000);
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        Accept: "*/*",
+        "Cache-Control": "no-cache",
+      },
+    });
 
-    try {
-      const response = await fetch(url, {
-        signal: controller.signal,
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-          Accept: "*/*",
-          "Cache-Control": "no-cache",
-        },
-      });
+    const responseText = await response.text();
 
-      const responseText = await response.text();
-
-      if (!response.ok) {
-        throw new Error(`IPTV Server returned ${response.status} para ${url}`);
-      }
-      if (isLikelyNotFoundPage(responseText)) {
-        throw new Error(`Servidor respondeu NOT_FOUND para ${url}`);
-      }
-      if (!responseText.includes("#EXTM3U")) {
-        throw new Error(`Resposta inválida em ${url} (não retornou M3U).`);
-      }
-
-      const parsedChannels = parseM3U(responseText);
-      const channels = filterByRequestedType(parsedChannels, requestedType);
-
-      if (channels.length > 0) return channels;
-      if (requestedType !== "all" && parsedChannels.length > 0) return parsedChannels;
-
-      throw new Error(`M3U sem itens reproduzíveis em ${url}.`);
-    } finally {
-      clearTimeout(timeout);
+    if (!response.ok) {
+      throw new Error(`IPTV Server returned ${response.status} para ${url}`);
     }
+    if (isLikelyNotFoundPage(responseText)) {
+      throw new Error(`Servidor respondeu NOT_FOUND para ${url}`);
+    }
+    if (!responseText.includes("#EXTM3U")) {
+      throw new Error(`Resposta inválida em ${url} (não retornou M3U).`);
+    }
+
+    const parsedChannels = parseM3U(responseText);
+    const channels = filterByRequestedType(parsedChannels, requestedType);
+
+    if (channels.length > 0) return channels;
+    if (requestedType !== "all" && parsedChannels.length > 0) return parsedChannels;
+
+    throw new Error(`M3U sem itens reproduzíveis em ${url}.`);
   };
 
   const allCandidates = sourceUrls.flatMap((sourceUrl) => buildCandidateUrls(sourceUrl));
