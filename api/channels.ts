@@ -14,7 +14,7 @@ interface XtreamCredentials {
 type RequestedType = 'all' | 'live' | 'movie' | 'series';
 
 const DEFAULT_IPTV_URL =
-  "http://ryzeeng.pro:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
+  "http://rozelds.shop:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
 
 const sanitizeUrl = (value: string) => value.replace(/\n/g, "").replace(/\r/g, "").trim();
 
