@@ -128,6 +128,7 @@ const buildPlayableCandidates = (url: string) => {
 };
 
 export default function Player() {
+  const WHATSAPP_SUBSCRIBE_URL = 'https://wa.me/5561993099265?text=Olá%2C%20venho%20do%20site%20UltraStreamTV%20e%20quero%20assinar';
   const [channels, setChannels] = useState<Channel[]>([]);
   const [currentChannel, setCurrentChannel] = useState<Channel | null>(null);
   const [loading, setLoading] = useState(false);
@@ -138,7 +139,7 @@ export default function Player() {
   const [playbackCandidateIndex, setPlaybackCandidateIndex] = useState(0);
   const [loadedTypes, setLoadedTypes] = useState<Set<ContentTab>>(new Set(['all']));
   const [vodPlaybackFailed, setVodPlaybackFailed] = useState(false);
-  const [vodFailureReason, setVodFailureReason] = useState('');
+  const [showPremiumModal, setShowPremiumModal] = useState(false);
   const [seriesCache, setSeriesCache] = useState<Record<string, SeriesDetails>>({});
   const [seriesLoading, setSeriesLoading] = useState(false);
   const [seriesError, setSeriesError] = useState('');
@@ -323,7 +324,7 @@ export default function Player() {
   useEffect(() => {
     setPlaybackCandidateIndex(0);
     setVodPlaybackFailed(false);
-    setVodFailureReason('');
+    setShowPremiumModal(false);
     if (currentChannel?.type === 'series') {
       loadSeriesDetails(currentChannel);
     } else {
@@ -411,7 +412,9 @@ export default function Player() {
     }
 
     if (isVodLike) {
-      setError(reason || 'Não foi possível reproduzir este item. Tente outro filme/série da lista.');
+      setVodPlaybackFailed(true);
+      setShowPremiumModal(true);
+      setError('');
       return;
     }
 
@@ -498,7 +501,8 @@ export default function Player() {
       extension: extractExtension(targetUrl || currentChannel.url),
     });
     if (strategy === 'vod:nova-aba-direta') {
-      setVodFailureReason('Origem/extensão não compatível com reprodução interna no navegador.');
+      setVodPlaybackFailed(true);
+      setShowPremiumModal(true);
     }
   }, [currentChannel, selectedEpisode?.id]);
 
@@ -546,32 +550,22 @@ export default function Player() {
                     src={directPlaybackUrl}
                     onLoadedData={() => {
                       setError('');
-                      setVodFailureReason('');
                     }}
                     onError={() => {
-                      const reason = 'Erro de carregamento no <video> para VOD.';
                       console.warn('[DIAG] Falha de reprodução', {
                         type: currentChannel.type,
                         url: directPlaybackUrl || currentChannel.url,
                         extension: currentExtension,
-                        reason,
+                        reason: 'vod_internal_playback_failed',
                       });
                       setVodPlaybackFailed(true);
-                      setVodFailureReason(reason);
+                      setShowPremiumModal(true);
                     }}
                   />
                 ) : (
                   <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-zinc-900 text-center px-4">
-                    <p className="text-sm text-gray-300">
-                      {vodFailureReason || 'Esta origem não permite reprodução interna no navegador.'}
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => window.open(directPlaybackUrl || currentChannel.url, '_blank', 'noopener,noreferrer')}
-                      className="text-xs px-3 py-1 rounded bg-blue-600 hover:bg-blue-500 transition-colors"
-                    >
-                      Abrir em nova aba
-                    </button>
+                    <Play className="w-12 h-12 text-blue-500/70" />
+                    <p className="text-sm text-gray-300">Conteúdo premium disponível para assinantes.</p>
                   </div>
                 )
               ) : (
@@ -593,21 +587,6 @@ export default function Player() {
               <div className="flex items-center gap-2 p-3 bg-white/5 border border-white/10 text-gray-300 rounded-xl">
                 <AlertCircle className="w-4 h-4 shrink-0 text-yellow-400" />
                 <p className="text-xs md:text-sm">{listNotice}</p>
-              </div>
-            )}
-
-            {currentChannel && currentChannel.type !== 'live' && (vodPlaybackFailed || !isBrowserCompatibleVodUrl(directPlaybackUrl || currentChannel.url)) && (
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between p-3 bg-white/5 border border-white/10 rounded-xl gap-3 min-w-0">
-                <p className="text-xs text-gray-400 truncate min-w-0">
-                  Fallback ativo para {currentChannel.type === 'series' ? 'série' : 'filme'}.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => window.open(directPlaybackUrl || currentChannel.url, '_blank', 'noopener,noreferrer')}
-                  className="text-xs px-3 py-1 rounded bg-blue-600 hover:bg-blue-500 transition-colors"
-                >
-                  Abrir em nova aba
-                </button>
               </div>
             )}
 
@@ -644,7 +623,6 @@ export default function Player() {
                           onClick={() => {
                             setSelectedEpisodeId(episode.id);
                             setVodPlaybackFailed(false);
-                            setVodFailureReason('');
                             console.info('[DIAG] Episódio selecionado', {
                               seriesId: selectedSeriesDetails.seriesId,
                               season: selectedSeason,
@@ -778,6 +756,35 @@ export default function Player() {
           </div>
         </div>
       </div>
+
+      {showPremiumModal && currentChannel && currentChannel.type !== 'live' && (
+        <div className="fixed inset-0 z-[70] bg-black/75 backdrop-blur-sm flex items-center justify-center px-4">
+          <div className="w-full max-w-md bg-zinc-950 border border-white/10 rounded-2xl p-6 shadow-2xl">
+            <h3 className="text-2xl font-bold mb-3">Assine para liberar</h3>
+            <p className="text-sm text-gray-300 leading-relaxed mb-6">
+              Os filmes e séries completos estão disponíveis para assinantes.
+              Fale agora no WhatsApp e ative seu acesso completo com praticidade e suporte rápido.
+            </p>
+            <div className="flex flex-col gap-3">
+              <a
+                href={WHATSAPP_SUBSCRIBE_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-full text-center bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-4 rounded-xl transition-colors"
+              >
+                👉 Assinar via WhatsApp
+              </a>
+              <button
+                type="button"
+                onClick={() => setShowPremiumModal(false)}
+                className="w-full bg-white/5 hover:bg-white/10 text-gray-200 font-medium py-3 px-4 rounded-xl transition-colors"
+              >
+                Continuar navegando
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
