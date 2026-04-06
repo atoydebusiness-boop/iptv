@@ -232,7 +232,7 @@ async function resolveChannels(sourceUrls: string[], requestedType: RequestedTyp
 
   const fetchCandidate = async (url: string) => {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 12000);
+    const timeout = setTimeout(() => controller.abort(), 30000);
 
     try {
       const response = await fetch(url, {
@@ -288,9 +288,15 @@ async function resolveChannels(sourceUrls: string[], requestedType: RequestedTyp
     }
   }
 
-  console.warn(`M3U falhou: ${lastError}. Tentando Xtream API...`);
   const primarySource = sourceUrls[0] || DEFAULT_IPTV_URL;
-  return buildChannelsFromXtream(primarySource, requestedType);
+  console.warn(`M3U falhou: ${lastError}. Tentando Xtream API...`);
+
+  try {
+    return await buildChannelsFromXtream(primarySource, requestedType);
+  } catch (xtreamError: any) {
+    const xtreamMessage = xtreamError?.message || "Erro desconhecido no fallback Xtream.";
+    throw new Error(`${lastError} | Xtream fallback: ${xtreamMessage}`);
+  }
 }
 
 export default async function handler(req: any, res: any) {
