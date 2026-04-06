@@ -20,6 +20,7 @@ type ChannelApiErrorCode =
   | 'UNKNOWN_ERROR'
   | 'server_unavailable'
   | 'timeout'
+  | 'rate_limited'
   | 'empty_response'
   | 'html_instead_of_playlist'
   | 'invalid_credentials'
@@ -98,6 +99,8 @@ const mapApiErrorToMessage = (errorCode?: ChannelApiErrorCode, fallback?: string
     case 'TIMEOUT':
     case 'timeout':
       return 'Timeout ao buscar a lista.';
+    case 'rate_limited':
+      return 'A origem limitou temporariamente as requisições (HTTP 429). A lista pode estar ativa, mas o servidor bloqueou excesso de acessos.';
     case 'EMPTY_RESPONSE':
     case 'empty_response':
       return 'A origem respondeu, mas sem itens válidos.';
@@ -185,6 +188,7 @@ export default function Player() {
   const apiUrl = '/api/channels';
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const initialLoadStartedRef = useRef(false);
 
   const setInitialChannel = (list: Channel[]) => {
     const preferredGloboChannel = list.find((channel) => normalize(channel.name).includes('globo'));
@@ -192,6 +196,9 @@ export default function Player() {
   };
 
   useEffect(() => {
+    if (initialLoadStartedRef.current) return;
+    initialLoadStartedRef.current = true;
+
     try {
       const cached = localStorage.getItem(CHANNEL_CACHE_KEY);
       if (cached) {

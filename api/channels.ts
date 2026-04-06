@@ -10,6 +10,7 @@ type RequestedType = "all" | "live" | "movie" | "series";
 type ErrorCode =
   | "server_unavailable"
   | "timeout"
+  | "rate_limited"
   | "empty_response"
   | "html_instead_of_playlist"
   | "invalid_credentials"
@@ -55,6 +56,7 @@ interface ApiSuccessPayload {
     requestedType: RequestedType;
     total: number;
     generatedAt: string;
+    stale?: boolean;
   };
 }
 
@@ -108,6 +110,19 @@ const PLAYLIST_SOURCE_URL =
   "http://rozelds.shop:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
 const M3U_TIMEOUT_MS = 20000;
 const PREVIEW_LIMIT = 500;
+const CACHE_TTL_MS = 2 * 60 * 1000;
+const MAX_RETRIES_429 = 2;
+const BASE_BACKOFF_MS = 1000;
+
+type CacheState = {
+  items: NormalizedChannel[];
+  fetchedAt: number;
+};
+
+let cacheState: CacheState | null = null;
+let inflightLoadPromise: Promise<NormalizedChannel[]> | null = null;
+let originCallCount = 0;
+let duplicateRequestCount = 0;
 
 const sanitizeUrl = (value: string) => value.replace(/\n/g, "").replace(/\r/g, "").trim();
 const normalize = (text?: string) => (text || "").trim().toLowerCase();
@@ -273,6 +288,52 @@ async function fetchWithDiagnostics(url: string, timeoutMs: number) {
   }
 }
 
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function parseRetryAfterSeconds(value: string | null): number | null {
+  if (!value) return null;
+  const asNumber = Number(value);
+  if (!Number.isNaN(asNumber) && asNumber >= 0) return asNumber;
+  const dateMs = Date.parse(value);
+  if (Number.isNaN(dateMs)) return null;
+  const diff = Math.ceil((dateMs - Date.now()) / 1000);
+  return diff > 0 ? diff : 0;
+}
+
+async function fetchPlaylistWithRetry(url: string) {
+  let lastResponse: Awaited<ReturnType<typeof fetchWithDiagnostics>> | null = null;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES_429 + 1; attempt++) {
+    originCallCount += 1;
+    const responsePack = await fetchWithDiagnostics(url, M3U_TIMEOUT_MS);
+    lastResponse = responsePack;
+
+    if (responsePack.response.status !== 429) {
+      return responsePack;
+    }
+
+    const retryAfterSeconds = parseRetryAfterSeconds(responsePack.response.headers.get("retry-after"));
+    const backoffMs = retryAfterSeconds != null ? retryAfterSeconds * 1000 : BASE_BACKOFF_MS * attempt;
+
+    console.warn(
+      JSON.stringify({
+        scope: "playlist-rate-limit",
+        attempt,
+        maxAttempts: MAX_RETRIES_429 + 1,
+        retryAfterSeconds,
+        backoffMs,
+      }),
+    );
+
+    if (attempt <= MAX_RETRIES_429) {
+      await wait(backoffMs);
+      continue;
+    }
+  }
+
+  return lastResponse!;
+}
+
 function parseM3UTolerant(content: string): { items: NormalizedChannel[]; diagnostics: ParseDiagnostics } {
   const lines = content.split(/\r?\n/);
 
@@ -395,7 +456,24 @@ async function resolveChannelsFromSource(sourceUrl: string, requestedType: Reque
     }),
   );
 
-  const { response, body, preview, responseTimeMs, contentType, contentLength, responseSizeBytes, headers } = await fetchWithDiagnostics(sourceUrl, M3U_TIMEOUT_MS);
+  const { response, body, preview, responseTimeMs, contentType, contentLength, responseSizeBytes, headers } = await fetchPlaylistWithRetry(sourceUrl);
+
+  if (response.status === 429) {
+    throw new ChannelLoadError({
+      code: "rate_limited",
+      reason: `upstream respondeu 429 ${response.statusText || ""}`.trim(),
+      message: "A origem limitou temporariamente as requisições (HTTP 429). A lista pode estar ativa, mas o servidor bloqueou excesso de acessos.",
+      httpStatus: 429,
+      upstreamStatus: response.status,
+      upstreamStatusText: response.statusText,
+      upstreamHeaders: headers,
+      responseTimeMs,
+      responseSizeBytes,
+      contentType,
+      contentLength,
+      preview,
+    });
+  }
 
   if (response.status === 401) {
     throw new ChannelLoadError({
@@ -521,6 +599,36 @@ function toApiError(error: ChannelLoadError): ApiErrorPayload {
   };
 }
 
+function isCacheFresh(cache: CacheState | null): boolean {
+  if (!cache) return false;
+  return Date.now() - cache.fetchedAt <= CACHE_TTL_MS;
+}
+
+async function loadAllItemsWithCache(sourceUrl: string): Promise<NormalizedChannel[]> {
+  if (isCacheFresh(cacheState)) {
+    console.log(JSON.stringify({ scope: "playlist-cache", hit: true, stale: false, originCallCount, duplicateRequestCount }));
+    return cacheState!.items;
+  }
+
+  console.log(JSON.stringify({ scope: "playlist-cache", hit: false, stale: false, originCallCount, duplicateRequestCount }));
+
+  if (inflightLoadPromise) {
+    duplicateRequestCount += 1;
+    console.log(JSON.stringify({ scope: "playlist-inflight", duplicateRequest: true, duplicateRequestCount }));
+    return inflightLoadPromise;
+  }
+
+  inflightLoadPromise = (async () => {
+    const items = await resolveChannelsFromSource(sourceUrl, "all");
+    cacheState = { items, fetchedAt: Date.now() };
+    return items;
+  })().finally(() => {
+    inflightLoadPromise = null;
+  });
+
+  return inflightLoadPromise;
+}
+
 export default async function handler(req: any, res: any) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
@@ -540,7 +648,8 @@ export default async function handler(req: any, res: any) {
   const sourceUrl = getPlaylistSourceUrl();
 
   try {
-    const items = await resolveChannelsFromSource(sourceUrl, requestedType);
+    const allItems = await loadAllItemsWithCache(sourceUrl);
+    const items = filterByRequestedType(allItems, requestedType);
     const payload: ApiSuccessPayload = {
       ok: true,
       items,
@@ -554,6 +663,23 @@ export default async function handler(req: any, res: any) {
     return;
   } catch (error) {
     const mapped = mapError(error);
+    if (mapped.code === "rate_limited" && cacheState?.items?.length) {
+      const cachedItems = filterByRequestedType(cacheState.items, requestedType);
+      if (cachedItems.length > 0) {
+        console.warn(JSON.stringify({ scope: "playlist-cache", staleServed: true, reason: "rate_limited", originCallCount, duplicateRequestCount }));
+        res.status(200).json({
+          ok: true,
+          items: cachedItems,
+          meta: {
+            requestedType,
+            total: cachedItems.length,
+            generatedAt: new Date().toISOString(),
+            stale: true,
+          },
+        } satisfies ApiSuccessPayload);
+        return;
+      }
+    }
     res.status(mapped.httpStatus).json(toApiError(mapped));
     return;
   }
