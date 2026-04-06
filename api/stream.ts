@@ -1,5 +1,3 @@
-import { Readable } from 'node:stream';
-
 const STREAM_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
@@ -193,12 +191,8 @@ export default async function handler(req: any, res: any) {
       if (value) res.setHeader(key, value);
     }
 
-    if (!upstream.body) {
-      res.status(502).json({ error: 'Stream proxy failed', details: 'Resposta sem body do upstream.' });
-      return;
-    }
-
-    Readable.fromWeb(upstream.body as any).pipe(res);
+    const buffer = Buffer.from(await upstream.arrayBuffer());
+    res.send(buffer);
   } catch (error: any) {
     res.status(502).json({ error: 'Stream proxy failed', details: error?.message || 'Unknown error' });
   }
