@@ -220,16 +220,30 @@ async function resolveChannels(sourceUrls: string[], requestedType: RequestedTyp
   let lastError = "Falha ao buscar a lista M3U.";
 
   const fetchCandidate = async (url: string) => {
-    const response = await fetch(url, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        Accept: "*/*",
-        "Cache-Control": "no-cache",
-      },
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
 
-    const responseText = await response.text();
+    let response: Response;
+    let responseText: string;
+    try {
+      response = await fetch(url, {
+        signal: controller.signal,
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+          Accept: "*/*",
+          "Cache-Control": "no-cache",
+        },
+      });
+      responseText = await response.text();
+    } catch (error: any) {
+      if (error?.name === "AbortError") {
+        throw new Error(`Timeout ao buscar a lista em ${url}`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
 
     if (!response.ok) {
       throw new Error(`IPTV Server returned ${response.status} para ${url}`);

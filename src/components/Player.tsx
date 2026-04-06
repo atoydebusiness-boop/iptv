@@ -125,8 +125,11 @@ export default function Player() {
     setLoading(true);
     setError('');
     try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 25000);
       const targetUrl = `${apiUrl}?type=${requestedType}`;
-      const response = await fetch(targetUrl, { cache: 'no-store' });
+      const response = await fetch(targetUrl, { cache: 'no-store', signal: controller.signal })
+        .finally(() => clearTimeout(timeout));
       if (!response.ok) {
         const errorRaw = await response.text();
         let errorMessage = 'Falha ao carregar lista do servidor.';
