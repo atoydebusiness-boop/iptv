@@ -104,11 +104,8 @@ class ChannelLoadError extends Error {
   }
 }
 
-const DEFAULT_IPTV_URL =
+const PLAYLIST_SOURCE_URL =
   "http://rozelds.shop:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
-const FALLBACK_IPTV_URL =
-  "http://rozelds.shop:80/get.php?username=462763&password=322879&type=m3u_plus&output=mpegts";
-const LOCKED_SOURCE_URLS = [DEFAULT_IPTV_URL, FALLBACK_IPTV_URL] as const;
 const M3U_TIMEOUT_MS = 20000;
 const PREVIEW_LIMIT = 500;
 
@@ -154,8 +151,8 @@ function filterByRequestedType(items: NormalizedChannel[], requestedType: Reques
   return items.filter((item) => item.kind === requestedType);
 }
 
-function parseSourceUrls(): string[] {
-  return [...LOCKED_SOURCE_URLS].map(sanitizeUrl).filter(Boolean);
+function getPlaylistSourceUrl(): string {
+  return sanitizeUrl(PLAYLIST_SOURCE_URL);
 }
 
 function ensureValidPlaylistBody(body: string, preview: string): void {
@@ -390,6 +387,14 @@ function mapError(error: unknown): ChannelLoadError {
 }
 
 async function resolveChannelsFromSource(sourceUrl: string, requestedType: RequestedType): Promise<NormalizedChannel[]> {
+  console.log(
+    JSON.stringify({
+      scope: "playlist-source",
+      message: "Usando origem única de playlist",
+      sourceUrl,
+    }),
+  );
+
   const { response, body, preview, responseTimeMs, contentType, contentLength, responseSizeBytes, headers } = await fetchWithDiagnostics(sourceUrl, M3U_TIMEOUT_MS);
 
   if (response.status === 401) {
@@ -532,44 +537,24 @@ export default async function handler(req: any, res: any) {
   }
 
   const requestedType = parseRequestedType(req.query?.type);
-  const sourceUrls = parseSourceUrls();
+  const sourceUrl = getPlaylistSourceUrl();
 
-  let lastError: ChannelLoadError | null = null;
-
-  for (const sourceUrl of sourceUrls) {
-    try {
-      const items = await resolveChannelsFromSource(sourceUrl, requestedType);
-      const payload: ApiSuccessPayload = {
-        ok: true,
-        items,
-        meta: {
-          requestedType,
-          total: items.length,
-          generatedAt: new Date().toISOString(),
-        },
-      };
-      res.status(200).json(payload);
-      return;
-    } catch (error) {
-      const mapped = mapError(error);
-      lastError = mapped;
-
-      // Só tenta próxima origem para erros de conectividade/upstream; para diagnóstico de parse,
-      // devolvemos imediatamente para não mascarar o problema real da resposta.
-      if (!["server_unavailable", "timeout", "upstream_http_error"].includes(mapped.code)) {
-        res.status(mapped.httpStatus).json(toApiError(mapped));
-        return;
-      }
-    }
+  try {
+    const items = await resolveChannelsFromSource(sourceUrl, requestedType);
+    const payload: ApiSuccessPayload = {
+      ok: true,
+      items,
+      meta: {
+        requestedType,
+        total: items.length,
+        generatedAt: new Date().toISOString(),
+      },
+    };
+    res.status(200).json(payload);
+    return;
+  } catch (error) {
+    const mapped = mapError(error);
+    res.status(mapped.httpStatus).json(toApiError(mapped));
+    return;
   }
-
-  const finalError = lastError ||
-    new ChannelLoadError({
-      code: "unknown_error",
-      reason: "nenhuma origem disponível",
-      message: "Falha ao carregar lista",
-      httpStatus: 500,
-    });
-
-  res.status(finalError.httpStatus).json(toApiError(finalError));
 }
