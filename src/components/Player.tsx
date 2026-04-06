@@ -10,6 +10,62 @@ interface Channel {
 }
 
 type ContentTab = 'all' | 'live' | 'movie' | 'series';
+type ChannelApiErrorCode =
+  | 'SERVER_UNAVAILABLE'
+  | 'TIMEOUT'
+  | 'EMPTY_RESPONSE'
+  | 'PARSE_ERROR'
+  | 'INVALID_CREDENTIALS'
+  | 'UPSTREAM_HTTP_ERROR'
+  | 'UNKNOWN_ERROR'
+  | 'server_unavailable'
+  | 'timeout'
+  | 'rate_limited'
+  | 'empty_response'
+  | 'html_instead_of_playlist'
+  | 'invalid_credentials'
+  | 'forbidden'
+  | 'endpoint_not_found'
+  | 'server_error'
+  | 'unsupported_format'
+  | 'parse_error'
+  | 'upstream_http_error'
+  | 'unknown_error';
+
+interface ChannelApiSuccess {
+  ok: true;
+  items: Array<{
+    id: string;
+    name: string;
+    group: string;
+    url: string;
+    kind: 'live' | 'movie' | 'series' | 'unknown';
+  }>;
+  meta: {
+    requestedType: ContentTab;
+    total: number;
+    generatedAt: string;
+    source: 'm3u' | 'xtream';
+  };
+}
+
+interface ChannelApiError {
+  ok: false;
+  error: ChannelApiErrorCode;
+  status?: number;
+  statusText?: string;
+  message: string;
+  details?: string;
+  diagnostics?: {
+    responseTime?: number;
+    dnsLookupMs?: number;
+    connectTimeMs?: number;
+    contentType?: string;
+    contentLength?: string;
+    responseSize?: number;
+    preview?: string;
+  };
+}
 
 const CHANNEL_CACHE_KEY = 'iptv_channels_cache_v3';
 const VISIBLE_PAGE_SIZE = 300;
@@ -36,6 +92,43 @@ const inferTypeFromText = (channel: Channel): Channel['type'] => {
 
 const normalizeChannels = (items: Channel[]): Channel[] =>
   items.map((item) => ({ ...item, type: inferTypeFromText(item) }));
+
+const mapApiErrorToMessage = (errorCode?: ChannelApiErrorCode, fallback?: string) => {
+  switch (errorCode) {
+    case 'SERVER_UNAVAILABLE':
+    case 'server_unavailable':
+      return 'Servidor de lista indisponível no momento.';
+    case 'TIMEOUT':
+    case 'timeout':
+      return 'A origem não respondeu a tempo para este ambiente/app, embora a lista possa funcionar em outros players.';
+    case 'rate_limited':
+      return 'A origem limitou temporariamente as requisições (HTTP 429). A lista pode estar ativa, mas o servidor bloqueou excesso de acessos.';
+    case 'EMPTY_RESPONSE':
+    case 'empty_response':
+      return 'A origem respondeu, mas sem itens válidos.';
+    case 'html_instead_of_playlist':
+      return 'A origem retornou HTML em vez de playlist.';
+    case 'unsupported_format':
+      return 'Formato da resposta não é compatível com M3U.';
+    case 'PARSE_ERROR':
+    case 'parse_error':
+      return 'A lista veio em formato inválido e não pôde ser parseada.';
+    case 'INVALID_CREDENTIALS':
+    case 'invalid_credentials':
+      return 'Credenciais inválidas para acessar a lista.';
+    case 'forbidden':
+      return 'A origem bloqueou o acesso (403).';
+    case 'endpoint_not_found':
+      return 'Endpoint da playlist não encontrado (404).';
+    case 'server_error':
+      return 'Erro interno no servidor da origem (5xx).';
+    case 'UPSTREAM_HTTP_ERROR':
+    case 'upstream_http_error':
+      return 'A origem retornou erro HTTP.';
+    default:
+      return fallback || 'Erro desconhecido ao buscar lista.';
+  }
+};
 
 const toProxyUrl = (url: string) => {
   if (url.startsWith('/api/stream?url=')) return url;
@@ -97,6 +190,7 @@ export default function Player() {
   const apiUrl = '/api/channels';
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const initialLoadStartedRef = useRef(false);
 
   const setInitialChannel = (list: Channel[]) => {
     const preferredGloboChannel = list.find((channel) => normalize(channel.name).includes('globo'));
@@ -104,6 +198,9 @@ export default function Player() {
   };
 
   useEffect(() => {
+    if (initialLoadStartedRef.current) return;
+    initialLoadStartedRef.current = true;
+
     try {
       const cached = localStorage.getItem(CHANNEL_CACHE_KEY);
       if (cached) {
@@ -130,24 +227,33 @@ export default function Player() {
       const targetUrl = `${apiUrl}?type=${requestedType}`;
       const response = await fetch(targetUrl, { cache: 'no-store', signal: controller.signal })
         .finally(() => clearTimeout(timeout));
-      if (!response.ok) {
-        const errorRaw = await response.text();
-        let errorMessage = 'Falha ao carregar lista do servidor.';
-        try {
-          const parsedError = JSON.parse(errorRaw);
-          errorMessage = parsedError.details || parsedError.error || errorMessage;
-        } catch {
-          errorMessage = (errorRaw || errorMessage).replace(/\s+/g, ' ').slice(0, 220);
-        }
-        throw new Error(errorMessage);
+      const data = (await response.json()) as ChannelApiSuccess | ChannelApiError;
+
+      if (!response.ok || !data || data.ok === false) {
+        const typedError = data as ChannelApiError;
+        const messageBase = mapApiErrorToMessage(typedError?.error, typedError?.message);
+        const statusInfo = typedError?.status ? ` [HTTP ${typedError.status}${typedError.statusText ? ` ${typedError.statusText}` : ''}]` : '';
+        const timingInfo = typedError?.diagnostics?.responseTime ? ` (${typedError.diagnostics.responseTime}ms)` : '';
+        const message = `${messageBase}${statusInfo}${timingInfo}`;
+        throw new Error(message);
       }
 
-      const data = await response.json();
-      if (!Array.isArray(data) || data.length === 0) {
+      if (!Array.isArray(data.items) || data.items.length === 0) {
         throw new Error('Nenhum item disponível no momento.');
       }
 
-      const normalizedData = normalizeChannels(data);
+      const normalizedData = normalizeChannels(
+        data.items.map((item) => ({
+          name: item.name,
+          group: item.group,
+          url: item.url,
+          type: item.kind,
+        })),
+      );
+      if (normalizedData.length === 0) {
+        throw new Error('Falha na normalização dos itens da lista.');
+      }
+
       setChannels((prev) => {
         const merged = requestedType === 'all' ? normalizedData : [...prev, ...normalizedData];
         const deduped = Array.from(new Map(merged.map((item) => [item.url, item])).values());
@@ -327,7 +433,15 @@ export default function Player() {
             {error && (
               <div className="flex items-center gap-2 p-4 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl">
                 <AlertCircle className="w-5 h-5 shrink-0" />
-                <p className="text-sm">{error}</p>
+                <div className="flex-1 flex items-center justify-between gap-3">
+                  <p className="text-sm">{error}</p>
+                  <button
+                    onClick={() => loadChannels('all')}
+                    className="text-xs px-3 py-1 rounded border border-red-400/30 hover:bg-red-500/10 transition-colors"
+                  >
+                    Tentar novamente
+                  </button>
+                </div>
               </div>
             )}
 

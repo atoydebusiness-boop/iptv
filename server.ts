@@ -208,7 +208,7 @@ async function startServer() {
   const PORT = 3000;
 
   const DEFAULT_IPTV_URL =
-    "http://ryzeeng.pro:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
+    "http://rozelds.shop:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
 
   const sanitizeUrl = (value: string) =>
     value
@@ -219,33 +219,8 @@ async function startServer() {
   const buildCandidateUrls = () => {
     const rawUrl = process.env.IPTV_M3U_URL || DEFAULT_IPTV_URL;
     const cleaned = sanitizeUrl(rawUrl);
-
     if (!cleaned) return [];
-
-    const candidates = new Set<string>();
-
-    const addUrlVariants = (urlValue: string) => {
-      try {
-        const parsed = new URL(urlValue.startsWith("http") ? urlValue : `http://${urlValue}`);
-
-        const output = (parsed.searchParams.get("output") || "").toLowerCase();
-        const outputs = output ? [output, "m3u8", "mpegts"] : ["hls", "m3u8", "mpegts"];
-        const protocols = [parsed.protocol, parsed.protocol === "http:" ? "https:" : "http:"];
-
-        for (const protocol of protocols) {
-          for (const out of outputs) {
-            parsed.protocol = protocol;
-            parsed.searchParams.set("output", out);
-            candidates.add(parsed.toString());
-          }
-        }
-      } catch {
-        candidates.add(urlValue);
-      }
-    };
-
-    addUrlVariants(cleaned);
-    return [...candidates];
+    return [cleaned];
   };
 
   const isLikelyNotFoundPage = (content: string) => {

@@ -1,319 +1,720 @@
-interface Channel {
+import { lookup } from "node:dns/promises";
+
+interface NormalizedChannel {
+  id: string;
   name: string;
+  group: string;
   url: string;
-  group?: string;
-  type?: "live" | "movie" | "series" | "unknown";
+  kind: "live" | "movie" | "series" | "unknown";
 }
 
-interface XtreamCredentials {
-  baseUrl: string;
-  username: string;
-  password: string;
+type RequestedType = "all" | "live" | "movie" | "series";
+type ErrorCode =
+  | "server_unavailable"
+  | "timeout"
+  | "rate_limited"
+  | "empty_response"
+  | "html_instead_of_playlist"
+  | "invalid_credentials"
+  | "forbidden"
+  | "endpoint_not_found"
+  | "server_error"
+  | "unsupported_format"
+  | "parse_error"
+  | "upstream_http_error"
+  | "unknown_error";
+
+interface ParseDiagnostics {
+  totalLines: number;
+  extinfLines: number;
+  urlLines: number;
+  foundItems: number;
+  discardedItems: number;
+  discardReasons: Record<string, number>;
 }
 
-type RequestedType = 'all' | 'live' | 'movie' | 'series';
+interface ApiErrorPayload {
+  ok: false;
+  error: ErrorCode;
+  status?: number;
+  statusText?: string;
+  message: string;
+  diagnostics?: {
+    responseTime?: number;
+    dnsLookupMs?: number;
+    connectTimeMs?: number;
+    contentType?: string;
+    contentLength?: string;
+    responseSize?: number;
+    headers?: Record<string, string>;
+    preview?: string;
+  };
+  reason?: string;
+  parseDiagnostics?: ParseDiagnostics;
+}
 
-const DEFAULT_IPTV_URL =
+interface ApiSuccessPayload {
+  ok: true;
+  items: NormalizedChannel[];
+  meta: {
+    requestedType: RequestedType;
+    total: number;
+    generatedAt: string;
+    stale?: boolean;
+  };
+}
+
+class ChannelLoadError extends Error {
+  code: ErrorCode;
+  httpStatus: number;
+  upstreamStatus?: number;
+  upstreamStatusText?: string;
+  upstreamHeaders?: Record<string, string>;
+  responseTimeMs?: number;
+  dnsLookupMs?: number;
+  connectTimeMs?: number;
+  responseSizeBytes?: number;
+  contentType?: string;
+  contentLength?: string;
+  reason: string;
+  preview?: string;
+  diagnostics?: ParseDiagnostics;
+
+  constructor(params: {
+    code: ErrorCode;
+    message: string;
+    reason: string;
+    httpStatus?: number;
+    upstreamStatus?: number;
+    upstreamStatusText?: string;
+    upstreamHeaders?: Record<string, string>;
+    responseTimeMs?: number;
+    dnsLookupMs?: number;
+    connectTimeMs?: number;
+    responseSizeBytes?: number;
+    contentType?: string;
+    contentLength?: string;
+    preview?: string;
+    diagnostics?: ParseDiagnostics;
+  }) {
+    super(params.message);
+    this.name = "ChannelLoadError";
+    this.code = params.code;
+    this.reason = params.reason;
+    this.httpStatus = params.httpStatus ?? 500;
+    this.upstreamStatus = params.upstreamStatus;
+    this.upstreamStatusText = params.upstreamStatusText;
+    this.upstreamHeaders = params.upstreamHeaders;
+    this.responseTimeMs = params.responseTimeMs;
+    this.dnsLookupMs = params.dnsLookupMs;
+    this.connectTimeMs = params.connectTimeMs;
+    this.responseSizeBytes = params.responseSizeBytes;
+    this.contentType = params.contentType;
+    this.contentLength = params.contentLength;
+    this.preview = params.preview;
+    this.diagnostics = params.diagnostics;
+  }
+}
+
+const PLAYLIST_SOURCE_URL =
   "http://rozelds.shop:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
-const FALLBACK_IPTV_URL =
-  "http://rozelds.shop:80/get.php?username=462763&password=322879&type=m3u_plus&output=mpegts";
-const LOCKED_SOURCE_URLS = [DEFAULT_IPTV_URL, FALLBACK_IPTV_URL] as const;
-const CHANNEL_CACHE_TTL_MS = 2 * 60 * 1000;
+const M3U_TIMEOUT_MS = 25000;
+const PREVIEW_LIMIT = 500;
+const CACHE_TTL_MS = 2 * 60 * 1000;
+const RETRY_DELAYS_MS = [2000, 5000, 10000];
 
-const sanitizeUrl = (value: string) => value.replace(/\n/g, "").replace(/\r/g, "").trim();
-
-type ChannelCacheState = {
-  channels: Channel[];
+type CacheState = {
+  items: NormalizedChannel[];
   fetchedAt: number;
 };
 
-let cachedAllChannels: ChannelCacheState | null = null;
-let inflightAllChannelsPromise: Promise<Channel[]> | null = null;
+let cacheState: CacheState | null = null;
+let inflightLoadPromise: Promise<NormalizedChannel[]> | null = null;
+let originCallCount = 0;
+let duplicateRequestCount = 0;
 
-function parseM3U(content: string): Channel[] {
-  const lines = content.split(/\r?\n/);
-  const channels: Channel[] = [];
-  let currentName = "";
-  let currentGroup = "";
+const sanitizeUrl = (value: string) => value.replace(/\n/g, "").replace(/\r/g, "").trim();
+const normalize = (text?: string) => (text || "").trim().toLowerCase();
 
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (!line) continue;
+const PREVIEW_SANITIZE_REGEX = /\s+/g;
+const ABSOLUTE_URL_REGEX = /^https?:\/\//i;
 
-    if (line.startsWith("#EXTINF:")) {
-      const tvgNameMatch = line.match(/tvg-name="([^"]+)"/);
-      const groupMatch = line.match(/group-title="([^"]+)"/);
-      const commaMatch = line.match(/,(.*)$/);
-      if (tvgNameMatch?.[1]) currentName = tvgNameMatch[1];
-      else if (commaMatch?.[1]) currentName = commaMatch[1].trim();
-      else currentName = "Canal Sem Nome";
-      currentGroup = groupMatch?.[1]?.trim() || "";
-    } else if (line.startsWith("http")) {
-      const normalizedUrl = line.toLowerCase();
-      let type: Channel["type"] = "unknown";
-      if (normalizedUrl.includes("/live/")) type = "live";
-      else if (normalizedUrl.includes("/movie/")) type = "movie";
-      else if (normalizedUrl.includes("/series/")) type = "series";
+function safePreview(text: string, limit = PREVIEW_LIMIT): string {
+  return text.replace(PREVIEW_SANITIZE_REGEX, " ").trim().slice(0, limit);
+}
 
-      channels.push({
-        name: currentName || "Canal Sem Nome",
-        url: line,
-        group: currentGroup,
-        type,
-      });
-      currentName = "";
-      currentGroup = "";
-    }
+function buildLogger(scope: string) {
+  const startedAt = Date.now();
+  return (payload: Record<string, unknown>) => {
+    console.log(
+      JSON.stringify({
+        scope,
+        elapsedMs: Date.now() - startedAt,
+        ...payload,
+      }),
+    );
+  };
+}
+
+function detectKind(name: string, group: string, url: string): NormalizedChannel["kind"] {
+  const haystack = `${name} ${group} ${url}`.toLowerCase();
+  if (haystack.includes("/series/") || haystack.includes("series") || haystack.includes("temporada")) return "series";
+  if (haystack.includes("/movie/") || haystack.includes("filme") || haystack.includes("vod")) return "movie";
+  if (haystack.includes("/live/") || haystack.includes("ao vivo") || haystack.includes("canal") || haystack.includes("live")) return "live";
+  return "unknown";
+}
+
+function parseRequestedType(value: unknown): RequestedType {
+  const candidate = String(value || "all");
+  if (candidate === "all" || candidate === "live" || candidate === "movie" || candidate === "series") return candidate;
+  return "all";
+}
+
+function filterByRequestedType(items: NormalizedChannel[], requestedType: RequestedType): NormalizedChannel[] {
+  if (requestedType === "all") return items;
+  return items.filter((item) => item.kind === requestedType);
+}
+
+function getPlaylistSourceUrl(): string {
+  return sanitizeUrl(PLAYLIST_SOURCE_URL);
+}
+
+function ensureValidPlaylistBody(body: string, preview: string): void {
+  const trimmed = body.trim();
+  if (!trimmed) {
+    throw new ChannelLoadError({
+      code: "empty_response",
+      reason: "upstream retornou body vazio",
+      message: "Resposta da origem vazia",
+      httpStatus: 502,
+      preview,
+    });
   }
 
-  return channels;
-}
+  const normalizedBody = normalize(trimmed);
+  if (normalizedBody.startsWith("<html") || normalizedBody.startsWith("<!doctype html") || normalizedBody.includes("<body")) {
+    throw new ChannelLoadError({
+      code: "html_instead_of_playlist",
+      reason: "origem retornou HTML ao invés de playlist",
+      message: "Origem respondeu HTML em vez de M3U",
+      httpStatus: 502,
+      preview,
+    });
+  }
 
+  if (/(invalid|username|password|auth|authentication|credentials)/i.test(trimmed)) {
+    throw new ChannelLoadError({
+      code: "invalid_credentials",
+      reason: "origem retornou texto indicando credenciais inválidas",
+      message: "Credenciais inválidas na origem",
+      httpStatus: 401,
+      preview,
+    });
+  }
 
-function detectChannelType(channel: Channel): Exclude<Channel['type'], 'unknown'> | 'unknown' {
-  if (channel.type && channel.type !== 'unknown') return channel.type;
-
-  const haystack = `${channel.name || ''} ${channel.group || ''} ${channel.url || ''}`.toLowerCase();
-  if (haystack.includes('/series/') || haystack.includes('series') || haystack.includes('temporada')) return 'series';
-  if (haystack.includes('/movie/') || haystack.includes('filme') || haystack.includes('vod')) return 'movie';
-  if (haystack.includes('/live/') || haystack.includes('ao vivo') || haystack.includes('canal')) return 'live';
-  return 'unknown';
-}
-
-function filterByRequestedType(channels: Channel[], requestedType: RequestedType): Channel[] {
-  if (requestedType === 'all') return channels;
-  return channels.filter((channel) => detectChannelType(channel) === requestedType);
-}
-
-function buildCandidateUrls(rawUrl: string): string[] {
-  const cleaned = sanitizeUrl(rawUrl);
-  if (!cleaned) return [];
-  return [cleaned];
-}
-
-function parseSourceUrls(input?: string): string[] {
-  void input;
-  return [...LOCKED_SOURCE_URLS];
-}
-
-const isLikelyNotFoundPage = (content: string) => {
-  const normalized = content.toLowerCase();
-  return (
-    normalized.includes("not_found") ||
-    normalized.includes("the page could not be found") ||
-    normalized.includes("gru1::")
-  );
-};
-
-function extractXtreamCredentials(rawUrl: string): XtreamCredentials | null {
-  try {
-    const parsed = new URL(rawUrl.startsWith("http") ? rawUrl : `http://${rawUrl}`);
-    const username = parsed.searchParams.get("username")?.trim();
-    const password = parsed.searchParams.get("password")?.trim();
-    if (!username || !password) return null;
-
-    return { baseUrl: `${parsed.protocol}//${parsed.host}`, username, password };
-  } catch {
-    return null;
+  const hasExtM3u = /#EXTM3U/i.test(trimmed);
+  const hasExtInf = /#EXTINF:/i.test(trimmed);
+  if (!hasExtM3u && !hasExtInf) {
+    throw new ChannelLoadError({
+      code: "unsupported_format",
+      reason: "resposta sem #EXTM3U e sem #EXTINF",
+      message: "Formato de resposta não suportado",
+      httpStatus: 502,
+      preview,
+    });
   }
 }
 
-async function fetchXtreamJson<T>(url: string, timeoutMs = 20000): Promise<T> {
+function pickMainHeaders(response: Response): Record<string, string> {
+  const main = ["content-type", "content-length", "server", "date", "cache-control", "cf-ray", "via"];
+  const result: Record<string, string> = {};
+  for (const key of main) {
+    const value = response.headers.get(key);
+    if (value) result[key] = value;
+  }
+  return result;
+}
+
+async function fetchWithDiagnostics(url: string, timeoutMs: number) {
+  const log = buildLogger("m3u-fetch");
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
+    let dnsLookupMs: number | undefined;
+    let resolvedAddress: string | undefined;
+    try {
+      const parsedUrl = new URL(url);
+      const dnsStart = Date.now();
+      const dnsInfo = await lookup(parsedUrl.hostname);
+      dnsLookupMs = Date.now() - dnsStart;
+      resolvedAddress = dnsInfo.address;
+    } catch {
+      dnsLookupMs = undefined;
+    }
+
+    const startedAt = Date.now();
     const response = await fetch(url, {
       signal: controller.signal,
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        Accept: "application/json,text/plain,*/*",
+        Accept: "*/*",
         "Cache-Control": "no-cache",
       },
     });
 
-    if (!response.ok) throw new Error(`Xtream API retornou ${response.status}`);
+    const body = await response.text();
+    const responseTimeMs = Date.now() - startedAt;
+    const contentType = response.headers.get("content-type") || "";
+    const contentLength = response.headers.get("content-length") || String(Buffer.byteLength(body, "utf8"));
+    const responseSizeBytes = Buffer.byteLength(body, "utf8");
+    const preview = safePreview(body, PREVIEW_LIMIT);
+    const headers = pickMainHeaders(response);
 
-    const payload = (await response.text()).trim();
-    if (!payload) throw new Error("Xtream API retornou vazio.");
-    return JSON.parse(payload) as T;
+    log({
+      url,
+      resolvedAddress,
+      status: response.status,
+      statusText: response.statusText,
+      dnsLookupMs,
+      contentType,
+      contentLength,
+      responseSizeBytes,
+      headers,
+      responseTimeMs,
+      preview,
+    });
+
+    return { response, body, preview, responseTimeMs, dnsLookupMs, resolvedAddress, contentType, contentLength, responseSizeBytes, headers };
+  } catch (error: any) {
+    const reason = error?.message || String(error);
+    log({ url, failed: true, reason });
+
+    if (error?.name === "AbortError") {
+      throw new ChannelLoadError({
+        code: "timeout",
+        reason: `timeout após ${timeoutMs}ms`,
+        message: "A origem não respondeu a tempo para este ambiente/app, embora a lista possa funcionar em outros players.",
+        httpStatus: 504,
+      });
+    }
+
+    throw new ChannelLoadError({
+      code: "server_unavailable",
+      reason,
+      message: "Servidor da lista indisponível",
+      httpStatus: 503,
+    });
   } finally {
     clearTimeout(timeout);
   }
 }
 
-async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedType): Promise<Channel[]> {
-  const creds = extractXtreamCredentials(rawUrl);
-  if (!creds) throw new Error("URL não contém credenciais Xtream válidas.");
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-  const { baseUrl, username, password } = creds;
-  const liveUrl = `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_live_streams`;
-  const vodUrl = `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_vod_streams`;
-  const seriesUrl = `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_series`;
-
-  type LiveItem = { name?: string; stream_id?: string | number; category_name?: string };
-  type VodItem = { name?: string; stream_id?: string | number; category_name?: string; container_extension?: string };
-  type SeriesItem = { name?: string; series_id?: string | number; category_name?: string };
-
-  const shouldLoadLive = requestedType === 'all' || requestedType === 'live';
-  const shouldLoadVod = requestedType === 'all' || requestedType === 'movie';
-  const shouldLoadSeries = requestedType === 'all' || requestedType === 'series';
-
-  const [liveItems, vodItems, seriesItems] = await Promise.allSettled([
-    shouldLoadLive ? fetchXtreamJson<LiveItem[]>(liveUrl) : Promise.resolve([] as LiveItem[]),
-    shouldLoadVod ? fetchXtreamJson<VodItem[]>(vodUrl) : Promise.resolve([] as VodItem[]),
-    shouldLoadSeries ? fetchXtreamJson<SeriesItem[]>(seriesUrl) : Promise.resolve([] as SeriesItem[]),
-  ]);
-
-  const channels: Channel[] = [];
-
-  if (liveItems.status === "fulfilled" && Array.isArray(liveItems.value)) {
-    for (const item of liveItems.value) {
-      if (!item.stream_id) continue;
-      channels.push({
-        name: item.name?.trim() || `Live ${item.stream_id}`,
-        group: item.category_name?.trim() || "Ao vivo",
-        type: "live",
-        url: `${baseUrl}/live/${username}/${password}/${item.stream_id}.m3u8`,
-      });
-    }
-  }
-
-  if (vodItems.status === "fulfilled" && Array.isArray(vodItems.value)) {
-    for (const item of vodItems.value) {
-      if (!item.stream_id) continue;
-      const ext = (item.container_extension || "mp4").replace(/[^a-z0-9]/gi, "") || "mp4";
-      channels.push({
-        name: item.name?.trim() || `Filme ${item.stream_id}`,
-        group: item.category_name?.trim() || "Filmes",
-        type: "movie",
-        url: `${baseUrl}/movie/${username}/${password}/${item.stream_id}.${ext}`,
-      });
-    }
-  }
-
-
-  if (seriesItems.status === "fulfilled" && Array.isArray(seriesItems.value)) {
-    for (const item of seriesItems.value) {
-      if (!item?.series_id) continue;
-      channels.push({
-        name: item.name?.trim() || `Série ${item.series_id}`,
-        group: item.category_name?.trim() || "Séries",
-        type: "series",
-        url: `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_series_info&series_id=${encodeURIComponent(String(item.series_id))}`,
-      });
-    }
-  }
-
-  if (channels.length === 0) {
-    const liveErr = liveItems.status === "rejected" ? String(liveItems.reason) : "ok";
-    const vodErr = vodItems.status === "rejected" ? String(vodItems.reason) : "ok";
-    const seriesErr = seriesItems.status === "rejected" ? String(seriesItems.reason) : "ok";
-    throw new Error(`Fallback Xtream sem itens disponíveis. live=${liveErr}; vod=${vodErr}; series=${seriesErr}`);
-  }
-
-  return channels;
+function parseRetryAfterSeconds(value: string | null): number | null {
+  if (!value) return null;
+  const asNumber = Number(value);
+  if (!Number.isNaN(asNumber) && asNumber >= 0) return asNumber;
+  const dateMs = Date.parse(value);
+  if (Number.isNaN(dateMs)) return null;
+  const diff = Math.ceil((dateMs - Date.now()) / 1000);
+  return diff > 0 ? diff : 0;
 }
 
-async function resolveChannels(sourceUrls: string[], requestedType: RequestedType): Promise<Channel[]> {
-  let lastError = "Falha ao buscar a lista M3U.";
+async function fetchPlaylistWithRetry(url: string) {
+  let lastResponse: Awaited<ReturnType<typeof fetchWithDiagnostics>> | null = null;
+  let lastTimeoutError: ChannelLoadError | null = null;
+  const maxAttempts = RETRY_DELAYS_MS.length + 1;
 
-  const fetchCandidate = async (url: string) => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
-
-    let response: Response;
-    let responseText: string;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    originCallCount += 1;
     try {
-      response = await fetch(url, {
-        signal: controller.signal,
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-          Accept: "*/*",
-          "Cache-Control": "no-cache",
-        },
-      });
-      responseText = await response.text();
-    } catch (error: any) {
-      if (error?.name === "AbortError") {
-        throw new Error(`Timeout ao buscar a lista em ${url}`);
+      const responsePack = await fetchWithDiagnostics(url, M3U_TIMEOUT_MS);
+      lastResponse = responsePack;
+      const status = responsePack.response.status;
+
+      const isRateLimited = status === 429;
+      const isGatewayTimeout = status === 504;
+      if (!isRateLimited && !isGatewayTimeout) {
+        return responsePack;
       }
-      throw error;
-    } finally {
-      clearTimeout(timeout);
-    }
 
-    if (!response.ok) {
-      throw new Error(`IPTV Server returned ${response.status} para ${url}`);
-    }
-    if (isLikelyNotFoundPage(responseText)) {
-      throw new Error(`Servidor respondeu NOT_FOUND para ${url}`);
-    }
-    if (!responseText.includes("#EXTM3U")) {
-      throw new Error(`Resposta inválida em ${url} (não retornou M3U).`);
-    }
+      const retryAfterSeconds = parseRetryAfterSeconds(responsePack.response.headers.get("retry-after"));
+      const delayFromPolicy = RETRY_DELAYS_MS[Math.max(0, attempt - 1)] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1];
+      const backoffMs = retryAfterSeconds != null ? retryAfterSeconds * 1000 : delayFromPolicy;
 
-    const parsedChannels = parseM3U(responseText);
-    const channels = filterByRequestedType(parsedChannels, requestedType);
+      console.warn(
+        JSON.stringify({
+          scope: "playlist-retry",
+          reason: isRateLimited ? "http_429" : "http_504",
+          attempt,
+          maxAttempts,
+          retryAfterSeconds,
+          backoffMs,
+        }),
+      );
 
-    if (channels.length > 0) return channels;
-    if (requestedType !== "all" && parsedChannels.length > 0) return parsedChannels;
+      if (attempt < maxAttempts) {
+        await wait(backoffMs);
+      }
+    } catch (error) {
+      const mapped = mapError(error);
+      lastTimeoutError = mapped.code === "timeout" ? mapped : null;
 
-    throw new Error(`M3U sem itens reproduzíveis em ${url}.`);
+      console.warn(
+        JSON.stringify({
+          scope: "playlist-retry",
+          reason: mapped.code,
+          attempt,
+          maxAttempts,
+        }),
+      );
+
+      if (mapped.code === "timeout" && attempt < maxAttempts) {
+        const backoffMs = RETRY_DELAYS_MS[Math.max(0, attempt - 1)] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1];
+        await wait(backoffMs);
+        continue;
+      }
+
+      throw mapped;
+    }
+  }
+
+  if (lastResponse) return lastResponse;
+  if (lastTimeoutError) throw lastTimeoutError;
+  throw new ChannelLoadError({
+    code: "timeout",
+    reason: "origem não respondeu após retries",
+    message: "A origem não respondeu a tempo para este ambiente/app, embora a lista possa funcionar em outros players.",
+    httpStatus: 504,
+  });
+}
+
+function parseM3UTolerant(content: string): { items: NormalizedChannel[]; diagnostics: ParseDiagnostics } {
+  const lines = content.split(/\r?\n/);
+
+  const diagnostics: ParseDiagnostics = {
+    totalLines: lines.length,
+    extinfLines: 0,
+    urlLines: 0,
+    foundItems: 0,
+    discardedItems: 0,
+    discardReasons: {},
   };
 
-  const allCandidates = sourceUrls.flatMap((sourceUrl) => buildCandidateUrls(sourceUrl));
-  if (allCandidates.length === 0) {
-    throw new Error("Nenhuma URL de lista válida configurada.");
-  }
+  const incDiscard = (reason: string) => {
+    diagnostics.discardedItems += 1;
+    diagnostics.discardReasons[reason] = (diagnostics.discardReasons[reason] || 0) + 1;
+  };
 
-  try {
-    return await Promise.any(allCandidates.map((url) => fetchCandidate(url)));
-  } catch (error: any) {
-    if (error instanceof AggregateError && Array.isArray(error.errors)) {
-      const reasons = error.errors
-        .map((reason) => reason?.message || String(reason))
-        .filter(Boolean);
-      if (reasons.length > 0) {
-        lastError = reasons[reasons.length - 1];
+  const items: NormalizedChannel[] = [];
+
+  let pendingName = "";
+  let pendingGroup = "";
+  let pendingLineNumber = -1;
+
+  for (let index = 0; index < lines.length; index++) {
+    const raw = lines[index] || "";
+    const line = raw.trim();
+
+    if (!line) continue;
+
+    if (/^#EXTINF:/i.test(line)) {
+      diagnostics.extinfLines += 1;
+
+      const groupMatch = line.match(/group-title="([^"]+)"/i);
+      const tvgNameMatch = line.match(/tvg-name="([^"]+)"/i);
+      const commaNameMatch = line.match(/,(.*)$/);
+
+      pendingGroup = groupMatch?.[1]?.trim() || "Sem categoria";
+      pendingName = commaNameMatch?.[1]?.trim() || tvgNameMatch?.[1]?.trim() || "Item sem nome";
+      pendingLineNumber = index + 1;
+      continue;
+    }
+
+    if (line.startsWith("#")) {
+      continue;
+    }
+
+    if (ABSOLUTE_URL_REGEX.test(line)) {
+      diagnostics.urlLines += 1;
+
+      const name = pendingName || `Item ${items.length + 1}`;
+      const group = pendingGroup || "Sem categoria";
+      const url = line;
+
+      if (!url) {
+        incDiscard("url_vazia");
+        pendingName = "";
+        pendingGroup = "";
+        pendingLineNumber = -1;
+        continue;
       }
+
+      const kind = detectKind(name, group, url);
+      const id = `${items.length + 1}-${Buffer.from(`${name}-${url}`).toString("base64").slice(0, 12)}`;
+
+      items.push({ id, name, group, url, kind });
+      diagnostics.foundItems += 1;
+
+      pendingName = "";
+      pendingGroup = "";
+      pendingLineNumber = -1;
+      continue;
+    }
+
+    if (pendingLineNumber > 0) {
+      incDiscard("extinf_sem_url_na_linha_seguinte");
+      pendingName = "";
+      pendingGroup = "";
+      pendingLineNumber = -1;
     } else {
-      lastError = error?.message || String(error);
+      incDiscard("linha_nao_suportada");
     }
   }
 
-  throw new Error(lastError);
-}
-
-function isCacheFresh(cache: ChannelCacheState | null) {
-  if (!cache) return false;
-  return Date.now() - cache.fetchedAt <= CHANNEL_CACHE_TTL_MS;
-}
-
-async function resolveAllChannelsWithCache(sourceUrls: string[]): Promise<Channel[]> {
-  if (isCacheFresh(cachedAllChannels)) {
-    return cachedAllChannels!.channels;
+  if (pendingLineNumber > 0) {
+    incDiscard("extinf_sem_url_final_arquivo");
   }
 
-  if (inflightAllChannelsPromise) {
-    return inflightAllChannelsPromise;
-  }
+  console.log(
+    JSON.stringify({
+      scope: "m3u-parse",
+      totalLines: diagnostics.totalLines,
+      extinfLines: diagnostics.extinfLines,
+      urlLines: diagnostics.urlLines,
+      foundItems: diagnostics.foundItems,
+      discardedItems: diagnostics.discardedItems,
+      discardReasons: diagnostics.discardReasons,
+    }),
+  );
 
-  inflightAllChannelsPromise = resolveChannels(sourceUrls, "all")
-    .then((channels) => {
-      cachedAllChannels = { channels, fetchedAt: Date.now() };
-      return channels;
-    })
-    .finally(() => {
-      inflightAllChannelsPromise = null;
+  return { items, diagnostics };
+}
+
+function mapError(error: unknown): ChannelLoadError {
+  if (error instanceof ChannelLoadError) return error;
+  const message = String((error as any)?.message || "Erro desconhecido");
+  return new ChannelLoadError({
+    code: "unknown_error",
+    reason: message,
+    message: "Erro ao carregar lista",
+    httpStatus: 500,
+  });
+}
+
+async function resolveChannelsFromSource(sourceUrl: string, requestedType: RequestedType): Promise<NormalizedChannel[]> {
+  console.log(
+    JSON.stringify({
+      scope: "playlist-source",
+      message: "Usando origem única de playlist",
+      sourceUrl,
+    }),
+  );
+
+  const { response, body, preview, responseTimeMs, dnsLookupMs, contentType, contentLength, responseSizeBytes, headers } = await fetchPlaylistWithRetry(sourceUrl);
+
+  if (response.status === 429) {
+    throw new ChannelLoadError({
+      code: "rate_limited",
+      reason: `upstream respondeu 429 ${response.statusText || ""}`.trim(),
+      message: "A origem limitou temporariamente as requisições (HTTP 429). A lista pode estar ativa, mas o servidor bloqueou excesso de acessos.",
+      httpStatus: 429,
+      upstreamStatus: response.status,
+      upstreamStatusText: response.statusText,
+      upstreamHeaders: headers,
+      responseTimeMs,
+      dnsLookupMs,
+      responseSizeBytes,
+      contentType,
+      contentLength,
+      preview,
     });
+  }
 
-  return inflightAllChannelsPromise;
+  if (response.status === 401) {
+    throw new ChannelLoadError({
+      code: "invalid_credentials",
+      reason: `upstream respondeu ${response.status} ${response.statusText || ""}`.trim(),
+      message: "Credenciais rejeitadas pela origem",
+      httpStatus: 401,
+      upstreamStatus: response.status,
+      upstreamStatusText: response.statusText,
+      upstreamHeaders: headers,
+      responseTimeMs,
+      dnsLookupMs,
+      responseSizeBytes,
+      contentType,
+      contentLength,
+      preview,
+    });
+  }
+
+  if (response.status === 403) {
+    throw new ChannelLoadError({
+      code: "forbidden",
+      reason: `upstream respondeu ${response.status} ${response.statusText || ""}`.trim(),
+      message: "Acesso proibido/bloqueado pela origem",
+      httpStatus: 403,
+      upstreamStatus: response.status,
+      upstreamStatusText: response.statusText,
+      upstreamHeaders: headers,
+      responseTimeMs,
+      dnsLookupMs,
+      responseSizeBytes,
+      contentType,
+      contentLength,
+      preview,
+    });
+  }
+
+  if (response.status === 404) {
+    throw new ChannelLoadError({
+      code: "endpoint_not_found",
+      reason: `upstream respondeu ${response.status} ${response.statusText || ""}`.trim(),
+      message: "Endpoint da playlist não encontrado",
+      httpStatus: 404,
+      upstreamStatus: response.status,
+      upstreamStatusText: response.statusText,
+      upstreamHeaders: headers,
+      responseTimeMs,
+      dnsLookupMs,
+      responseSizeBytes,
+      contentType,
+      contentLength,
+      preview,
+    });
+  }
+
+  if (response.status === 504) {
+    throw new ChannelLoadError({
+      code: "timeout",
+      reason: `upstream respondeu ${response.status} ${response.statusText || ""}`.trim(),
+      message: "A origem não respondeu a tempo para este ambiente/app, embora a lista possa funcionar em outros players.",
+      httpStatus: 504,
+      upstreamStatus: response.status,
+      upstreamStatusText: response.statusText,
+      upstreamHeaders: headers,
+      responseTimeMs,
+      dnsLookupMs,
+      responseSizeBytes,
+      contentType,
+      contentLength,
+      preview,
+    });
+  }
+
+  if (response.status >= 500 && response.status <= 599) {
+    throw new ChannelLoadError({
+      code: "server_error",
+      reason: `upstream respondeu ${response.status} ${response.statusText || ""}`.trim(),
+      message: "Servidor da origem com erro interno",
+      httpStatus: 502,
+      upstreamStatus: response.status,
+      upstreamStatusText: response.statusText,
+      upstreamHeaders: headers,
+      responseTimeMs,
+      dnsLookupMs,
+      responseSizeBytes,
+      contentType,
+      contentLength,
+      preview,
+    });
+  }
+
+  if (!response.ok) {
+    throw new ChannelLoadError({
+      code: "upstream_http_error",
+      reason: `upstream respondeu ${response.status} ${response.statusText || ""}`.trim(),
+      message: `Servidor da lista retornou ${response.status}`,
+      httpStatus: 502,
+      upstreamStatus: response.status,
+      upstreamStatusText: response.statusText,
+      upstreamHeaders: headers,
+      responseTimeMs,
+      dnsLookupMs,
+      responseSizeBytes,
+      contentType,
+      contentLength,
+      preview,
+    });
+  }
+
+  ensureValidPlaylistBody(body, preview);
+
+  const { items, diagnostics } = parseM3UTolerant(body);
+  const filtered = filterByRequestedType(items, requestedType);
+
+  if (filtered.length === 0) {
+    throw new ChannelLoadError({
+      code: "parse_error",
+      reason: "resposta recebida, mas nenhum item válido foi gerado",
+      message: "Sem itens válidos após parse e normalização",
+      httpStatus: 422,
+      preview,
+      diagnostics,
+    });
+  }
+
+  return filtered;
+}
+
+function toApiError(error: ChannelLoadError): ApiErrorPayload {
+  return {
+    ok: false,
+    error: error.code,
+    status: error.upstreamStatus ?? error.httpStatus,
+    statusText: error.upstreamStatusText,
+    message: error.message,
+    diagnostics: {
+      responseTime: error.responseTimeMs,
+      dnsLookupMs: error.dnsLookupMs,
+      connectTimeMs: error.connectTimeMs,
+      contentType: error.contentType,
+      contentLength: error.contentLength,
+      responseSize: error.responseSizeBytes,
+      headers: error.upstreamHeaders,
+      preview: error.preview?.slice(0, 300),
+    },
+    reason: error.reason,
+    parseDiagnostics: error.diagnostics,
+  };
+}
+
+function isCacheFresh(cache: CacheState | null): boolean {
+  if (!cache) return false;
+  return Date.now() - cache.fetchedAt <= CACHE_TTL_MS;
+}
+
+async function loadAllItemsWithCache(sourceUrl: string): Promise<NormalizedChannel[]> {
+  if (isCacheFresh(cacheState)) {
+    console.log(JSON.stringify({ scope: "playlist-cache", hit: true, stale: false, originCallCount, duplicateRequestCount }));
+    return cacheState!.items;
+  }
+
+  console.log(JSON.stringify({ scope: "playlist-cache", hit: false, stale: false, originCallCount, duplicateRequestCount }));
+
+  if (inflightLoadPromise) {
+    duplicateRequestCount += 1;
+    console.log(JSON.stringify({ scope: "playlist-inflight", duplicateRequest: true, duplicateRequestCount }));
+    return inflightLoadPromise;
+  }
+
+  inflightLoadPromise = (async () => {
+    const items = await resolveChannelsFromSource(sourceUrl, "all");
+    cacheState = { items, fetchedAt: Date.now() };
+    return items;
+  })().finally(() => {
+    inflightLoadPromise = null;
+  });
+
+  return inflightLoadPromise;
 }
 
 export default async function handler(req: any, res: any) {
+  const routeStartedAt = Date.now();
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -324,35 +725,70 @@ export default async function handler(req: any, res: any) {
   }
 
   if (req.method !== "GET") {
-    res.status(405).json({ error: "Method Not Allowed" });
+    res.status(405).json({ ok: false, error: "unknown_error", reason: "method_not_allowed", message: "Method Not Allowed", status: 405 });
     return;
   }
 
-  try {
-    const requestedType = (["all", "live", "movie", "series"].includes(String(req.query?.type || "all"))
-      ? String(req.query?.type || "all")
-      : "all") as RequestedType;
+  const requestedType = parseRequestedType(req.query?.type);
+  const sourceUrl = getPlaylistSourceUrl();
 
-    const sourceUrls = parseSourceUrls(process.env.IPTV_M3U_URL);
-    const allChannels = await resolveAllChannelsWithCache(sourceUrls);
-    const channels = filterByRequestedType(allChannels, requestedType);
-    res.status(200).json(channels);
-  } catch (error: any) {
-    if (cachedAllChannels?.channels?.length) {
-      const requestedType = (["all", "live", "movie", "series"].includes(String(req.query?.type || "all"))
-        ? String(req.query?.type || "all")
-        : "all") as RequestedType;
-      const fallbackChannels = filterByRequestedType(cachedAllChannels.channels, requestedType);
-      if (fallbackChannels.length > 0) {
-        res.setHeader("X-Cache", "STALE");
-        res.status(200).json(fallbackChannels);
+  try {
+    const allItems = await loadAllItemsWithCache(sourceUrl);
+    const items = filterByRequestedType(allItems, requestedType);
+    const payload: ApiSuccessPayload = {
+      ok: true,
+      items,
+      meta: {
+        requestedType,
+        total: items.length,
+        generatedAt: new Date().toISOString(),
+      },
+    };
+    console.log(JSON.stringify({
+      scope: "playlist-route",
+      outcome: "success",
+      totalRouteMs: Date.now() - routeStartedAt,
+      originCallCount,
+      duplicateRequestCount,
+    }));
+    res.status(200).json(payload);
+    return;
+  } catch (error) {
+    const mapped = mapError(error);
+    if ((mapped.code === "rate_limited" || mapped.code === "timeout") && cacheState?.items?.length) {
+      const cachedItems = filterByRequestedType(cacheState.items, requestedType);
+      if (cachedItems.length > 0) {
+        console.warn(JSON.stringify({ scope: "playlist-cache", staleServed: true, reason: mapped.code, originCallCount, duplicateRequestCount }));
+        res.status(200).json({
+          ok: true,
+          items: cachedItems,
+          meta: {
+            requestedType,
+            total: cachedItems.length,
+            generatedAt: new Date().toISOString(),
+            stale: true,
+          },
+        } satisfies ApiSuccessPayload);
+        console.warn(JSON.stringify({
+          scope: "playlist-route",
+          outcome: "stale-cache-fallback",
+          reason: mapped.code,
+          totalRouteMs: Date.now() - routeStartedAt,
+          originCallCount,
+          duplicateRequestCount,
+        }));
         return;
       }
     }
-
-    res.status(500).json({
-      error: "Failed to fetch channels",
-      details: error?.message || "Erro desconhecido",
-    });
+    console.error(JSON.stringify({
+      scope: "playlist-route",
+      outcome: "error",
+      reason: mapped.code,
+      totalRouteMs: Date.now() - routeStartedAt,
+      originCallCount,
+      duplicateRequestCount,
+    }));
+    res.status(mapped.httpStatus).json(toApiError(mapped));
+    return;
   }
 }
