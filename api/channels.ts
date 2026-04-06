@@ -73,6 +73,17 @@ function filterByRequestedType(channels: Channel[], requestedType: RequestedType
   return channels.filter((channel) => detectChannelType(channel) === requestedType);
 }
 
+function summarizeTypes(channels: Channel[]) {
+  return channels.reduce(
+    (acc, channel) => {
+      const type = detectChannelType(channel);
+      acc[type] += 1;
+      return acc;
+    },
+    { live: 0, movie: 0, series: 0, unknown: 0 } as Record<'live' | 'movie' | 'series' | 'unknown', number>,
+  );
+}
+
 function buildCandidateUrls(rawUrl: string): string[] {
   const cleaned = sanitizeUrl(rawUrl);
   if (!cleaned) return [];
@@ -255,7 +266,15 @@ async function resolveChannels(sourceUrl: string, requestedType: RequestedType):
       }
 
       const parsedChannels = parseM3U(responseText);
+      const parsedSummary = summarizeTypes(parsedChannels);
+      console.log(
+        `[diagnostic][m3u] total=${parsedChannels.length} live=${parsedSummary.live} movie=${parsedSummary.movie} series=${parsedSummary.series} unknown=${parsedSummary.unknown}`,
+      );
       const channels = filterByRequestedType(parsedChannels, requestedType);
+      const filteredSummary = summarizeTypes(channels);
+      console.log(
+        `[diagnostic][filtered:${requestedType}] total=${channels.length} live=${filteredSummary.live} movie=${filteredSummary.movie} series=${filteredSummary.series} unknown=${filteredSummary.unknown}`,
+      );
       if (channels.length > 0) return channels;
 
       if (requestedType !== "all" && parsedChannels.length > 0) {
@@ -272,8 +291,12 @@ async function resolveChannels(sourceUrl: string, requestedType: RequestedType):
 
   const failureContext = `${lastError}${lastTriedUrl ? ` | Última tentativa: ${lastTriedUrl}` : ""}`;
   console.warn(`M3U falhou: ${failureContext}. Tentando Xtream API...`);
-
-  return buildChannelsFromXtream(sourceUrl, requestedType);
+  const fallback = await buildChannelsFromXtream(sourceUrl, requestedType);
+  const fallbackSummary = summarizeTypes(fallback);
+  console.log(
+    `[diagnostic][xtream-fallback:${requestedType}] total=${fallback.length} live=${fallbackSummary.live} movie=${fallbackSummary.movie} series=${fallbackSummary.series} unknown=${fallbackSummary.unknown}`,
+  );
+  return fallback;
 }
 
 export default async function handler(req: any, res: any) {

@@ -161,6 +161,17 @@ function filterByRequestedType(channels: Channel[], requestedType: RequestedType
   return channels.filter((channel) => detectChannelType(channel) === requestedType);
 }
 
+function summarizeTypes(channels: Channel[]) {
+  return channels.reduce(
+    (acc, channel) => {
+      const type = detectChannelType(channel);
+      acc[type] += 1;
+      return acc;
+    },
+    { live: 0, movie: 0, series: 0, unknown: 0 } as Record<'live' | 'movie' | 'series' | 'unknown', number>,
+  );
+}
+
 function parseM3U(content: string): Channel[] {
   const lines = content.split(/\r?\n/);
   const channels: Channel[] = [];
@@ -486,7 +497,15 @@ async function startServer() {
       }
       if (content) {
         const parsedChannels = parseM3U(content);
+        const parsedSummary = summarizeTypes(parsedChannels);
+        console.log(
+          `[diagnostic][m3u] total=${parsedChannels.length} live=${parsedSummary.live} movie=${parsedSummary.movie} series=${parsedSummary.series} unknown=${parsedSummary.unknown}`,
+        );
         const channels = filterByRequestedType(parsedChannels, requestedType);
+        const filteredSummary = summarizeTypes(channels);
+        console.log(
+          `[diagnostic][filtered:${requestedType}] total=${channels.length} live=${filteredSummary.live} movie=${filteredSummary.movie} series=${filteredSummary.series} unknown=${filteredSummary.unknown}`,
+        );
         if (channels.length > 0) {
           console.log(`Parsed ${channels.length} channels`);
           res.json(channels);
@@ -506,6 +525,10 @@ async function startServer() {
       const m3uFailureContext = `${lastError}${lastTriedUrl ? ` Última tentativa: ${lastTriedUrl}` : ""}`;
       console.warn(`M3U fetch falhou (${m3uFailureContext}). Tentando fallback Xtream API: ${fallbackUrl}`);
       const fallbackChannels = await buildChannelsFromXtream(sanitizeUrl(fallbackUrl), requestedType);
+      const fallbackSummary = summarizeTypes(fallbackChannels);
+      console.log(
+        `[diagnostic][xtream-fallback:${requestedType}] total=${fallbackChannels.length} live=${fallbackSummary.live} movie=${fallbackSummary.movie} series=${fallbackSummary.series} unknown=${fallbackSummary.unknown}`,
+      );
       console.log(`Fallback Xtream retornou ${fallbackChannels.length} itens`);
       res.json(fallbackChannels);
     } catch (error: any) {

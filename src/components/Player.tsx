@@ -37,6 +37,16 @@ const inferTypeFromText = (channel: Channel): Channel['type'] => {
 const normalizeChannels = (items: Channel[]): Channel[] =>
   items.map((item) => ({ ...item, type: inferTypeFromText(item) }));
 
+const summarizeTypes = (items: Channel[]) =>
+  items.reduce(
+    (acc, item) => {
+      const type = item.type || 'unknown';
+      if (type === 'live' || type === 'movie' || type === 'series' || type === 'unknown') acc[type] += 1;
+      return acc;
+    },
+    { live: 0, movie: 0, series: 0, unknown: 0 } as Record<'live' | 'movie' | 'series' | 'unknown', number>,
+  );
+
 const toProxyUrl = (url: string) => {
   if (url.startsWith('/api/stream?url=')) return url;
   return `/api/stream?url=${encodeURIComponent(url)}`;
@@ -149,9 +159,17 @@ export default function Player() {
       }
 
       const normalizedData = normalizeChannels(data);
+      const fetchedSummary = summarizeTypes(normalizedData);
+      console.log(
+        `[diagnostic][frontend:fetch:${requestedType}] total=${normalizedData.length} live=${fetchedSummary.live} movie=${fetchedSummary.movie} series=${fetchedSummary.series} unknown=${fetchedSummary.unknown}`,
+      );
       setChannels((prev) => {
         const merged = requestedType === 'all' ? normalizedData : [...prev, ...normalizedData];
         const deduped = Array.from(new Map(merged.map((item) => [item.url, item])).values());
+        const mergedSummary = summarizeTypes(deduped);
+        console.log(
+          `[diagnostic][frontend:merged] total=${deduped.length} live=${mergedSummary.live} movie=${mergedSummary.movie} series=${mergedSummary.series} unknown=${mergedSummary.unknown}`,
+        );
         setInitialChannel(deduped);
         localStorage.setItem(CHANNEL_CACHE_KEY, JSON.stringify(deduped.slice(0, 5000)));
         return deduped;
