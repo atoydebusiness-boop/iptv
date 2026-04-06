@@ -11,6 +11,7 @@ interface Channel {
 
 type ContentTab = 'all' | 'live' | 'movie' | 'series';
 
+const CHANNEL_CACHE_KEY = 'iptv_channels_cache_v3';
 const VISIBLE_PAGE_SIZE = 300;
 
 const normalize = (text?: string) => (text || '').toLowerCase();
@@ -103,6 +104,20 @@ export default function Player() {
   };
 
   useEffect(() => {
+    try {
+      const cached = localStorage.getItem(CHANNEL_CACHE_KEY);
+      if (cached) {
+        const parsed = JSON.parse(cached) as Channel[];
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const normalizedCache = normalizeChannels(parsed);
+          setChannels(normalizedCache);
+          setInitialChannel(normalizedCache);
+        }
+      }
+    } catch (err) {
+      console.warn('Não foi possível ler cache da lista.', err);
+    }
+
     loadChannels();
   }, []);
 
@@ -137,12 +152,11 @@ export default function Player() {
         const merged = requestedType === 'all' ? normalizedData : [...prev, ...normalizedData];
         const deduped = Array.from(new Map(merged.map((item) => [item.url, item])).values());
         setInitialChannel(deduped);
+        localStorage.setItem(CHANNEL_CACHE_KEY, JSON.stringify(deduped.slice(0, 5000)));
         return deduped;
       });
     } catch (err: any) {
       const message = err?.name === 'AbortError' ? 'Timeout ao carregar lista do servidor.' : err.message;
-      setChannels([]);
-      setCurrentChannel(null);
       setError(`Erro: ${message}. Verifique se sua lista está ativa ou tente novamente.`);
       console.error(err);
     } finally {
