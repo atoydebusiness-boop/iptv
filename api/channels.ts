@@ -14,7 +14,9 @@ interface XtreamCredentials {
 type RequestedType = 'all' | 'live' | 'movie' | 'series';
 
 const DEFAULT_IPTV_URL =
-  "http://ryzeeng.pro:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
+  "http://rozelds.shop:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
+const FALLBACK_IPTV_URL =
+  "http://rozelds.shop:80/get.php?username=462763&password=322879&type=m3u_plus&output=mpegts";
 
 const sanitizeUrl = (value: string) => value.replace(/\n/g, "").replace(/\r/g, "").trim();
 
@@ -80,22 +82,29 @@ function buildCandidateUrls(rawUrl: string): string[] {
   const candidates = new Set<string>();
   try {
     const parsed = new URL(cleaned.startsWith("http") ? cleaned : `http://${cleaned}`);
-    const output = (parsed.searchParams.get("output") || "").toLowerCase();
-    const outputs = output ? [output, "m3u8", "mpegts"] : ["hls", "m3u8", "mpegts"];
-    const protocols = [parsed.protocol, parsed.protocol === "http:" ? "https:" : "http:"];
+    const output = (parsed.searchParams.get("output") || "hls").toLowerCase();
+    const outputs = output === "mpegts" ? ["mpegts", "hls"] : ["hls", "mpegts"];
 
-    for (const protocol of protocols) {
-      for (const out of outputs) {
-        parsed.protocol = protocol;
-        parsed.searchParams.set("output", out);
-        candidates.add(parsed.toString());
-      }
+    for (const out of outputs) {
+      parsed.searchParams.set("output", out);
+      candidates.add(parsed.toString());
     }
   } catch {
     candidates.add(cleaned);
   }
 
   return [...candidates];
+}
+
+function parseSourceUrls(input?: string): string[] {
+  const raw = String(input || "")
+    .replace(/\\n/g, "\n")
+    .split(/\r?\n/)
+    .map((item) => sanitizeUrl(item))
+    .filter(Boolean);
+
+  if (raw.length > 0) return raw;
+  return [DEFAULT_IPTV_URL, FALLBACK_IPTV_URL];
 }
 
 const isLikelyNotFoundPage = (content: string) => {
@@ -218,8 +227,7 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
   return channels;
 }
 
-async function resolveChannels(sourceUrl: string, requestedType: RequestedType): Promise<Channel[]> {
-  const candidateUrls = buildCandidateUrls(sourceUrl);
+async function resolveChannels(sourceUrls: string[], requestedType: RequestedType): Promise<Channel[]> {
   let lastError = "Falha ao buscar a lista M3U.";
 
   const fetchCandidate = async (url: string) => {
@@ -261,23 +269,28 @@ async function resolveChannels(sourceUrl: string, requestedType: RequestedType):
     }
   };
 
-  try {
-    return await Promise.any(candidateUrls.map((url) => fetchCandidate(url)));
-  } catch (error: any) {
-    if (error instanceof AggregateError && Array.isArray(error.errors)) {
-      const reasons = error.errors
-        .map((reason) => reason?.message || String(reason))
-        .filter(Boolean);
-      if (reasons.length > 0) {
-        lastError = reasons[reasons.length - 1];
+  for (const sourceUrl of sourceUrls) {
+    const candidateUrls = buildCandidateUrls(sourceUrl);
+    if (candidateUrls.length === 0) continue;
+    try {
+      return await Promise.any(candidateUrls.map((url) => fetchCandidate(url)));
+    } catch (error: any) {
+      if (error instanceof AggregateError && Array.isArray(error.errors)) {
+        const reasons = error.errors
+          .map((reason) => reason?.message || String(reason))
+          .filter(Boolean);
+        if (reasons.length > 0) {
+          lastError = reasons[reasons.length - 1];
+        }
+      } else {
+        lastError = error?.message || String(error);
       }
-    } else {
-      lastError = error?.message || String(error);
     }
   }
 
   console.warn(`M3U falhou: ${lastError}. Tentando Xtream API...`);
-  return buildChannelsFromXtream(sourceUrl, requestedType);
+  const primarySource = sourceUrls[0] || DEFAULT_IPTV_URL;
+  return buildChannelsFromXtream(primarySource, requestedType);
 }
 
 export default async function handler(req: any, res: any) {
@@ -300,8 +313,8 @@ export default async function handler(req: any, res: any) {
       ? String(req.query?.type || "all")
       : "all") as RequestedType;
 
-    const sourceUrl = sanitizeUrl(process.env.IPTV_M3U_URL || DEFAULT_IPTV_URL);
-    const channels = await resolveChannels(sourceUrl, requestedType);
+    const sourceUrls = parseSourceUrls(process.env.IPTV_M3U_URL);
+    const channels = await resolveChannels(sourceUrls, requestedType);
     res.status(200).json(channels);
   } catch (error: any) {
     res.status(500).json({
