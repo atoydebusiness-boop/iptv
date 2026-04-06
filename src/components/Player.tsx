@@ -3,16 +3,44 @@ import Hls from 'hls.js';
 import { Play, List, Search, AlertCircle, Zap } from 'lucide-react';
 
 interface Channel {
+  id?: string;
   name: string;
   url: string;
   group?: string;
   type?: 'live' | 'movie' | 'series' | 'unknown';
+  poster?: string;
+  seasonNumber?: number;
+  episodeNumber?: number;
+  seriesId?: string;
 }
 
 type ContentTab = 'all' | 'live' | 'movie' | 'series';
 
 const CHANNEL_CACHE_KEY = 'iptv_channels_cache_v2';
 const VISIBLE_PAGE_SIZE = 300;
+interface SeriesHierarchy {
+  id: string;
+  name: string;
+  category: string;
+  poster: string;
+  seasons: Array<{
+    seasonNumber: number;
+    episodes: Array<{
+      id: string;
+      name: string;
+      seasonNumber: number;
+      episodeNumber: number;
+      source: string;
+    }>;
+  }>;
+}
+
+interface CatalogResponse {
+  live: Array<{ id: string; name: string; category: string; poster: string; source: string }>;
+  movies: Array<{ id: string; name: string; category: string; poster: string; source: string }>;
+  series: SeriesHierarchy[];
+  diagnostics?: unknown;
+}
 
 const normalize = (text?: string) => (text || '').toLowerCase();
 
@@ -86,6 +114,9 @@ const buildPlayableCandidates = (url: string) => {
 
 export default function Player() {
   const [channels, setChannels] = useState<Channel[]>([]);
+  const [seriesCatalog, setSeriesCatalog] = useState<SeriesHierarchy[]>([]);
+  const [selectedSeries, setSelectedSeries] = useState<SeriesHierarchy | null>(null);
+  const [selectedSeasonNumber, setSelectedSeasonNumber] = useState<number | null>(null);
   const [currentChannel, setCurrentChannel] = useState<Channel | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -143,12 +174,47 @@ export default function Player() {
         throw new Error(errorMessage);
       }
 
-      const data = await response.json();
-      if (!Array.isArray(data) || data.length === 0) {
-        throw new Error('Nenhum item disponível no momento.');
-      }
+      const data = (await response.json()) as CatalogResponse | Channel[];
+      const normalizedData = Array.isArray(data)
+        ? normalizeChannels(data)
+        : normalizeChannels([
+            ...(data.live || []).map((item) => ({
+              id: item.id,
+              name: item.name,
+              url: item.source,
+              group: item.category,
+              poster: item.poster,
+              type: 'live' as const,
+            })),
+            ...(data.movies || []).map((item) => ({
+              id: item.id,
+              name: item.name,
+              url: item.source,
+              group: item.category,
+              poster: item.poster,
+              type: 'movie' as const,
+            })),
+            ...((data.series || []).flatMap((series) =>
+              series.seasons.flatMap((season) =>
+                season.episodes.map((episode) => ({
+                  id: episode.id,
+                  seriesId: series.id,
+                  name: `${series.name} - S${episode.seasonNumber}E${episode.episodeNumber} ${episode.name}`,
+                  url: episode.source,
+                  group: series.category,
+                  poster: series.poster,
+                  seasonNumber: episode.seasonNumber,
+                  episodeNumber: episode.episodeNumber,
+                  type: 'series' as const,
+                })),
+              ),
+            ) || []),
+          ]);
+      if (normalizedData.length === 0) throw new Error('Nenhum item disponível no momento.');
 
-      const normalizedData = normalizeChannels(data);
+      if (!Array.isArray(data)) {
+        setSeriesCatalog(data.series || []);
+      }
       setChannels((prev) => {
         const merged = requestedType === 'all' ? normalizedData : [...prev, ...normalizedData];
         const deduped = Array.from(new Map(merged.map((item) => [item.url, item])).values());
@@ -174,6 +240,13 @@ export default function Player() {
     }
   }, [activeTab]);
 
+  useEffect(() => {
+    if (activeTab !== 'series') {
+      setSelectedSeries(null);
+      setSelectedSeasonNumber(null);
+    }
+  }, [activeTab]);
+
   const filteredChannels = useMemo(() => {
     return channels.filter((channel) => {
       const matchesSearch =
@@ -193,6 +266,53 @@ export default function Player() {
     () => filteredChannels.slice(0, visibleCount),
     [filteredChannels, visibleCount],
   );
+
+  const visibleSeriesRows = useMemo(() => {
+    if (activeTab !== 'series') return [];
+    if (!selectedSeries) {
+      return seriesCatalog
+        .filter((series) => !searchNormalized || normalize(series.name).includes(searchNormalized) || normalize(series.category).includes(searchNormalized))
+        .map((series) => ({
+          key: `series-${series.id}`,
+          title: series.name,
+          subtitle: `${series.category} • ${series.seasons.length} temporada(s)`,
+          action: () => {
+            setSelectedSeries(series);
+            setSelectedSeasonNumber(null);
+          },
+          selected: false,
+        }));
+    }
+    if (selectedSeasonNumber === null) {
+      return selectedSeries.seasons.map((season) => ({
+        key: `season-${season.seasonNumber}`,
+        title: `Temporada ${season.seasonNumber}`,
+        subtitle: `${season.episodes.length} episódio(s)`,
+        action: () => setSelectedSeasonNumber(season.seasonNumber),
+        selected: false,
+      }));
+    }
+    const season = selectedSeries.seasons.find((item) => item.seasonNumber === selectedSeasonNumber);
+    return (season?.episodes || []).map((episode) => ({
+      key: `episode-${episode.id}`,
+      title: `E${episode.episodeNumber} • ${episode.name}`,
+      subtitle: `Temporada ${episode.seasonNumber}`,
+      action: () => {
+        setCurrentChannel({
+          id: episode.id,
+          name: `${selectedSeries.name} - ${episode.name}`,
+          url: episode.source,
+          group: selectedSeries.category,
+          type: 'series',
+          seasonNumber: episode.seasonNumber,
+          episodeNumber: episode.episodeNumber,
+        });
+        setPlaybackCandidateIndex(0);
+        setError('');
+      },
+      selected: currentChannel?.id === episode.id,
+    }));
+  }, [activeTab, selectedSeries, selectedSeasonNumber, seriesCatalog, searchNormalized, currentChannel?.id]);
 
   useEffect(() => {
     setPlaybackCandidateIndex(0);
@@ -353,9 +473,23 @@ export default function Player() {
                 <List className="w-5 h-5 text-blue-500" />
                 <h3 className="font-bold">Lista M3U</h3>
                 <span className="ml-auto text-xs text-gray-500 bg-white/5 px-2 py-1 rounded">
-                  {filteredChannels.length} itens
+                  {activeTab === 'series' ? visibleSeriesRows.length : filteredChannels.length} itens
                 </span>
               </div>
+              {activeTab === 'series' && selectedSeries && (
+                <div className="mb-3 flex flex-wrap gap-2">
+                  <button
+                    className="text-[11px] bg-black text-gray-300 px-2 py-1 rounded border border-white/10"
+                    onClick={() => {
+                      if (selectedSeasonNumber !== null) setSelectedSeasonNumber(null);
+                      else setSelectedSeries(null);
+                    }}
+                  >
+                    {selectedSeasonNumber !== null ? 'Voltar temporadas' : 'Voltar séries'}
+                  </button>
+                  <span className="text-[11px] text-gray-500 self-center">{selectedSeries.name}</span>
+                </div>
+              )}
               <div className="grid grid-cols-4 gap-2 mb-3">
                 {([
                   { id: 'all', label: 'Tudo' },
@@ -398,27 +532,45 @@ export default function Player() {
                 }
               }}
             >
-              {visibleChannels.length > 0 ? (
+              {(activeTab === 'series' ? visibleSeriesRows.length > 0 : visibleChannels.length > 0) ? (
                 <>
-                  {visibleChannels.map((channel, i) => (
-                    <button
-                      key={`${channel.url}-${i}`}
-                      onClick={() => { setCurrentChannel(channel); setPlaybackCandidateIndex(0); setError(''); }}
-                      className={`w-full text-left p-3 rounded-lg text-sm transition-all mb-1 flex items-center gap-3 ${
-                        currentChannel?.url === channel.url
-                          ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20'
-                          : 'hover:bg-white/5 text-gray-400 hover:text-white'
-                      }`}
-                    >
-                      <div className={`w-2 h-2 rounded-full ${currentChannel?.url === channel.url ? 'bg-white' : 'bg-green-500'}`} />
-                      <div className="min-w-0 flex-1">
-                        <span className="truncate block">{channel.name}</span>
-                        {channel.group && (
-                          <span className="text-[11px] text-gray-500 truncate block">{channel.group}</span>
-                        )}
-                      </div>
-                    </button>
-                  ))}
+                  {activeTab === 'series'
+                    ? visibleSeriesRows.map((row) => (
+                        <button
+                          key={row.key}
+                          onClick={row.action}
+                          className={`w-full text-left p-3 rounded-lg text-sm transition-all mb-1 flex items-center gap-3 ${
+                            row.selected
+                              ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20'
+                              : 'hover:bg-white/5 text-gray-400 hover:text-white'
+                          }`}
+                        >
+                          <div className={`w-2 h-2 rounded-full ${row.selected ? 'bg-white' : 'bg-green-500'}`} />
+                          <div className="min-w-0 flex-1">
+                            <span className="truncate block">{row.title}</span>
+                            <span className="text-[11px] text-gray-500 truncate block">{row.subtitle}</span>
+                          </div>
+                        </button>
+                      ))
+                    : visibleChannels.map((channel, i) => (
+                        <button
+                          key={`${channel.url}-${i}`}
+                          onClick={() => { setCurrentChannel(channel); setPlaybackCandidateIndex(0); setError(''); }}
+                          className={`w-full text-left p-3 rounded-lg text-sm transition-all mb-1 flex items-center gap-3 ${
+                            currentChannel?.url === channel.url
+                              ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20'
+                              : 'hover:bg-white/5 text-gray-400 hover:text-white'
+                          }`}
+                        >
+                          <div className={`w-2 h-2 rounded-full ${currentChannel?.url === channel.url ? 'bg-white' : 'bg-green-500'}`} />
+                          <div className="min-w-0 flex-1">
+                            <span className="truncate block">{channel.name}</span>
+                            {channel.group && (
+                              <span className="text-[11px] text-gray-500 truncate block">{channel.group}</span>
+                            )}
+                          </div>
+                        </button>
+                      ))}
 
                   {visibleChannels.length < filteredChannels.length && (
                     <div className="text-center text-xs text-gray-500 py-3">
