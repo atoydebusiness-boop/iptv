@@ -48,6 +48,40 @@ const extractExtension = (url: string) => {
   return match?.[1]?.toLowerCase() || 'sem_extensao';
 };
 
+type MovieUrlKind = 'm3u8' | 'mp4' | 'other';
+
+const detectMovieUrlKind = (url: string): MovieUrlKind => {
+  const ext = extractExtension(url);
+  if (ext === 'm3u8') return 'm3u8';
+  if (ext === 'mp4') return 'mp4';
+  return 'other';
+};
+
+const buildMoviePlaybackCandidates = (url: string) => {
+  const candidates = new Set<string>();
+  const kind = detectMovieUrlKind(url);
+
+  const add = (candidate: string) => {
+    candidates.add(candidate);
+    if (candidate.startsWith('http://')) {
+      candidates.add(candidate.replace('http://', 'https://'));
+    }
+  };
+
+  add(url);
+
+  if (kind === 'm3u8') {
+    add(url.replace(/\.m3u8(\?.*)?$/i, '.mp4$1'));
+  } else if (kind === 'mp4') {
+    add(url.replace(/\.mp4(\?.*)?$/i, '.m3u8$1'));
+  } else {
+    add(`${url}.m3u8`);
+    add(`${url}.mp4`);
+  }
+
+  return [...candidates];
+};
+
 const buildPlayableCandidates = (url: string) => {
   const candidates = new Set<string>();
   const normalized = normalize(url);
@@ -204,10 +238,13 @@ export default function Player() {
     setPlaybackCandidateIndex(0);
   }, [currentChannel?.url]);
 
-  const currentPlaybackCandidates = useMemo(
-    () => (currentChannel ? buildPlayableCandidates(currentChannel.url) : []),
-    [currentChannel],
-  );
+  const currentPlaybackCandidates = useMemo(() => {
+    if (!currentChannel) return [];
+    if (currentChannel.type === 'movie') {
+      return buildMoviePlaybackCandidates(currentChannel.url);
+    }
+    return buildPlayableCandidates(currentChannel.url);
+  }, [currentChannel]);
 
   const directPlaybackUrl = currentPlaybackCandidates[playbackCandidateIndex] || currentChannel?.url || '';
   const playbackUrl = directPlaybackUrl ? toProxyUrl(directPlaybackUrl) : '';
@@ -286,12 +323,19 @@ export default function Player() {
 
     const normalized = directPlaybackUrl.toLowerCase();
     const isHlsSource = normalized.includes('.m3u8') || normalized.includes('m3u8');
-    const strategy = isHlsSource && Hls.isSupported() ? 'hls.js' : 'video-src-direto';
+    const movieUrlKind = currentChannel?.type === 'movie' ? detectMovieUrlKind(directPlaybackUrl) : null;
+    const strategy = (() => {
+      if (currentChannel?.type !== 'movie') return isHlsSource && Hls.isSupported() ? 'hls.js' : 'video-src-direto';
+      if (movieUrlKind === 'm3u8' && Hls.isSupported()) return 'movie:hls.js';
+      if (movieUrlKind === 'mp4') return 'movie:video-mp4';
+      return 'movie:video-fallback';
+    })();
 
     console.info('[DIAG] Estratégia de player', {
       strategy,
       channel: currentChannel?.name,
       type: currentChannel?.type || 'unknown',
+      movieUrlKind,
       candidateIndex: playbackCandidateIndex,
       directPlaybackUrl,
       playbackUrl,
