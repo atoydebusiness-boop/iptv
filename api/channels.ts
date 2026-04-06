@@ -17,8 +17,17 @@ const DEFAULT_IPTV_URL =
   "http://rozelds.shop:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
 const FALLBACK_IPTV_URL =
   "http://rozelds.shop:80/get.php?username=462763&password=322879&type=m3u_plus&output=mpegts";
+const CHANNEL_CACHE_TTL_MS = 2 * 60 * 1000;
 
 const sanitizeUrl = (value: string) => value.replace(/\n/g, "").replace(/\r/g, "").trim();
+
+type ChannelCacheState = {
+  channels: Channel[];
+  fetchedAt: number;
+};
+
+let cachedAllChannels: ChannelCacheState | null = null;
+let inflightAllChannelsPromise: Promise<Channel[]> | null = null;
 
 function parseM3U(content: string): Channel[] {
   const lines = content.split(/\r?\n/);
@@ -289,6 +298,10 @@ async function resolveChannels(sourceUrls: string[], requestedType: RequestedTyp
   }
 
   const primarySource = sourceUrls[0] || DEFAULT_IPTV_URL;
+  if (lastError.includes(" 429 ")) {
+    throw new Error(lastError);
+  }
+
   console.warn(`M3U falhou: ${lastError}. Tentando Xtream API...`);
 
   try {
@@ -297,6 +310,32 @@ async function resolveChannels(sourceUrls: string[], requestedType: RequestedTyp
     const xtreamMessage = xtreamError?.message || "Erro desconhecido no fallback Xtream.";
     throw new Error(`${lastError} | Xtream fallback: ${xtreamMessage}`);
   }
+}
+
+function isCacheFresh(cache: ChannelCacheState | null) {
+  if (!cache) return false;
+  return Date.now() - cache.fetchedAt <= CHANNEL_CACHE_TTL_MS;
+}
+
+async function resolveAllChannelsWithCache(sourceUrls: string[]): Promise<Channel[]> {
+  if (isCacheFresh(cachedAllChannels)) {
+    return cachedAllChannels!.channels;
+  }
+
+  if (inflightAllChannelsPromise) {
+    return inflightAllChannelsPromise;
+  }
+
+  inflightAllChannelsPromise = resolveChannels(sourceUrls, "all")
+    .then((channels) => {
+      cachedAllChannels = { channels, fetchedAt: Date.now() };
+      return channels;
+    })
+    .finally(() => {
+      inflightAllChannelsPromise = null;
+    });
+
+  return inflightAllChannelsPromise;
 }
 
 export default async function handler(req: any, res: any) {
@@ -320,9 +359,22 @@ export default async function handler(req: any, res: any) {
       : "all") as RequestedType;
 
     const sourceUrls = parseSourceUrls(process.env.IPTV_M3U_URL);
-    const channels = await resolveChannels(sourceUrls, requestedType);
+    const allChannels = await resolveAllChannelsWithCache(sourceUrls);
+    const channels = filterByRequestedType(allChannels, requestedType);
     res.status(200).json(channels);
   } catch (error: any) {
+    if (cachedAllChannels?.channels?.length) {
+      const requestedType = (["all", "live", "movie", "series"].includes(String(req.query?.type || "all"))
+        ? String(req.query?.type || "all")
+        : "all") as RequestedType;
+      const fallbackChannels = filterByRequestedType(cachedAllChannels.channels, requestedType);
+      if (fallbackChannels.length > 0) {
+        res.setHeader("X-Cache", "STALE");
+        res.status(200).json(fallbackChannels);
+        return;
+      }
+    }
+
     res.status(500).json({
       error: "Failed to fetch channels",
       details: error?.message || "Erro desconhecido",
