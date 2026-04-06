@@ -3,6 +3,19 @@
 @layer base {
   html {
     scroll-behavior: smooth;
+    background-color: #000;
+  }
+
+  body {
+    background-color: #000;
+    color: #fff;
+    overflow-x: hidden;
+  }
+
+  #root {
+    min-height: 100dvh;
+    background-color: #000;
+    overflow-x: hidden;
   }
 }
 

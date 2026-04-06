@@ -491,16 +491,16 @@ export default function Player() {
   }, [currentChannel, selectedEpisode?.id]);
 
   return (
-    <section id="player" className="py-20 bg-zinc-950">
-      <div className="max-w-7xl mx-auto px-4">
-        <div className="text-center mb-12">
+    <section id="player" className="py-14 md:py-20 bg-zinc-950 overflow-x-clip">
+      <div className="max-w-7xl mx-auto px-3 sm:px-4">
+        <div className="text-center mb-8 md:mb-12">
           <h2 className="text-3xl md:text-4xl font-bold mb-4">Web Player M3U</h2>
           <p className="text-gray-400">A lista já entra carregada, abre tentando formatos alternativos e tem filtros para ao vivo, filmes e séries.</p>
         </div>
 
-        <div className="grid lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-2 space-y-6">
-            <div className="bg-black rounded-2xl overflow-hidden aspect-video border border-white/10 shadow-2xl relative group">
+        <div className="grid lg:grid-cols-3 gap-4 md:gap-8 items-start">
+          <div className="lg:col-span-2 space-y-4 md:space-y-6 min-w-0">
+            <div className="bg-black rounded-2xl overflow-hidden aspect-video border border-white/10 shadow-2xl relative group min-h-[210px] sm:min-h-[260px]">
               {loading && channels.length === 0 ? (
                 <div className="absolute inset-0 flex flex-col items-center justify-center text-blue-500 bg-zinc-900">
                   <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
@@ -530,7 +530,7 @@ export default function Player() {
                     autoPlay
                     muted
                     playsInline
-                    className="w-full h-full bg-black"
+                    className="w-full h-full bg-black object-contain"
                     src={directPlaybackUrl}
                     onLoadedData={() => {
                       setError('');
@@ -585,7 +585,7 @@ export default function Player() {
             )}
 
             {currentChannel && currentChannel.type !== 'live' && (vodPlaybackFailed || !isBrowserCompatibleVodUrl(directPlaybackUrl || currentChannel.url)) && (
-              <div className="flex items-center justify-between p-3 bg-white/5 border border-white/10 rounded-xl gap-3">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between p-3 bg-white/5 border border-white/10 rounded-xl gap-3">
                 <p className="text-xs text-gray-400 truncate">
                   Fallback ativo para {currentChannel.type === 'series' ? 'série' : 'filme'}.
                 </p>
@@ -657,7 +657,7 @@ export default function Player() {
               </div>
             )}
 
-            <div className="p-6 bg-blue-600/10 border border-blue-500/20 rounded-2xl">
+            <div className="p-4 md:p-6 bg-blue-600/10 border border-blue-500/20 rounded-2xl">
               <h4 className="font-bold mb-2 flex items-center gap-2">
                 <Zap className="w-4 h-4 text-blue-500" />
                 Dica de Performance
@@ -668,8 +668,8 @@ export default function Player() {
             </div>
           </div>
 
-          <div className="bg-zinc-900 border border-white/10 rounded-2xl flex flex-col h-[600px]">
-            <div className="p-4 border-b border-white/10">
+          <div className="bg-zinc-900 border border-white/10 rounded-2xl flex flex-col h-[520px] md:h-[600px] min-w-0 overflow-hidden">
+            <div className="p-3 md:p-4 border-b border-white/10">
               <div className="flex items-center gap-2 mb-4">
                 <List className="w-5 h-5 text-blue-500" />
                 <h3 className="font-bold">Lista M3U</h3>
@@ -677,7 +677,7 @@ export default function Player() {
                   {filteredChannels.length} itens
                 </span>
               </div>
-              <div className="grid grid-cols-4 gap-2 mb-3">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
                 {([
                   { id: 'all', label: 'Tudo' },
                   { id: 'live', label: 'Ao vivo' },
@@ -687,7 +687,7 @@ export default function Player() {
                   <button
                     key={tab.id}
                     onClick={() => { setActiveTab(tab.id); setError(''); }}
-                    className={`text-xs py-2 rounded-lg transition-colors ${
+                    className={`text-[11px] sm:text-xs py-2 rounded-lg transition-colors leading-none whitespace-nowrap ${
                       activeTab === tab.id
                         ? 'bg-blue-600 text-white'
                         : 'bg-black text-gray-400 hover:text-white hover:bg-white/10'
@@ -697,12 +697,12 @@ export default function Player() {
                   </button>
                 ))}
               </div>
-              <div className="relative">
+              <div className="relative min-w-0">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
                 <input
                   type="text"
                   placeholder="Buscar item..."
-                  className="w-full bg-black border border-white/10 rounded-lg pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="w-full bg-black border border-white/10 rounded-lg pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 min-w-0"
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                 />
