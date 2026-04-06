@@ -58,6 +58,8 @@ interface ChannelApiError {
   details?: string;
   diagnostics?: {
     responseTime?: number;
+    dnsLookupMs?: number;
+    connectTimeMs?: number;
     contentType?: string;
     contentLength?: string;
     responseSize?: number;
@@ -98,7 +100,7 @@ const mapApiErrorToMessage = (errorCode?: ChannelApiErrorCode, fallback?: string
       return 'Servidor de lista indisponível no momento.';
     case 'TIMEOUT':
     case 'timeout':
-      return 'A origem demorou para responder (HTTP 504). Tente novamente mais tarde.';
+      return 'A origem não respondeu a tempo para este ambiente/app, embora a lista possa funcionar em outros players.';
     case 'rate_limited':
       return 'A origem limitou temporariamente as requisições (HTTP 429). A lista pode estar ativa, mas o servidor bloqueou excesso de acessos.';
     case 'EMPTY_RESPONSE':

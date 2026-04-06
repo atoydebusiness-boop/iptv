@@ -1,3 +1,5 @@
+import { lookup } from "node:dns/promises";
+
 interface NormalizedChannel {
   id: string;
   name: string;
@@ -39,6 +41,8 @@ interface ApiErrorPayload {
   message: string;
   diagnostics?: {
     responseTime?: number;
+    dnsLookupMs?: number;
+    connectTimeMs?: number;
     contentType?: string;
     contentLength?: string;
     responseSize?: number;
@@ -67,6 +71,8 @@ class ChannelLoadError extends Error {
   upstreamStatusText?: string;
   upstreamHeaders?: Record<string, string>;
   responseTimeMs?: number;
+  dnsLookupMs?: number;
+  connectTimeMs?: number;
   responseSizeBytes?: number;
   contentType?: string;
   contentLength?: string;
@@ -83,6 +89,8 @@ class ChannelLoadError extends Error {
     upstreamStatusText?: string;
     upstreamHeaders?: Record<string, string>;
     responseTimeMs?: number;
+    dnsLookupMs?: number;
+    connectTimeMs?: number;
     responseSizeBytes?: number;
     contentType?: string;
     contentLength?: string;
@@ -98,6 +106,8 @@ class ChannelLoadError extends Error {
     this.upstreamStatusText = params.upstreamStatusText;
     this.upstreamHeaders = params.upstreamHeaders;
     this.responseTimeMs = params.responseTimeMs;
+    this.dnsLookupMs = params.dnsLookupMs;
+    this.connectTimeMs = params.connectTimeMs;
     this.responseSizeBytes = params.responseSizeBytes;
     this.contentType = params.contentType;
     this.contentLength = params.contentLength;
@@ -108,7 +118,7 @@ class ChannelLoadError extends Error {
 
 const PLAYLIST_SOURCE_URL =
   "http://rozelds.shop:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
-const M3U_TIMEOUT_MS = 20000;
+const M3U_TIMEOUT_MS = 25000;
 const PREVIEW_LIMIT = 500;
 const CACHE_TTL_MS = 2 * 60 * 1000;
 const RETRY_DELAYS_MS = [2000, 5000, 10000];
@@ -231,6 +241,18 @@ async function fetchWithDiagnostics(url: string, timeoutMs: number) {
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
+    let dnsLookupMs: number | undefined;
+    let resolvedAddress: string | undefined;
+    try {
+      const parsedUrl = new URL(url);
+      const dnsStart = Date.now();
+      const dnsInfo = await lookup(parsedUrl.hostname);
+      dnsLookupMs = Date.now() - dnsStart;
+      resolvedAddress = dnsInfo.address;
+    } catch {
+      dnsLookupMs = undefined;
+    }
+
     const startedAt = Date.now();
     const response = await fetch(url, {
       signal: controller.signal,
@@ -252,8 +274,10 @@ async function fetchWithDiagnostics(url: string, timeoutMs: number) {
 
     log({
       url,
+      resolvedAddress,
       status: response.status,
       statusText: response.statusText,
+      dnsLookupMs,
       contentType,
       contentLength,
       responseSizeBytes,
@@ -262,7 +286,7 @@ async function fetchWithDiagnostics(url: string, timeoutMs: number) {
       preview,
     });
 
-    return { response, body, preview, responseTimeMs, contentType, contentLength, responseSizeBytes, headers };
+    return { response, body, preview, responseTimeMs, dnsLookupMs, resolvedAddress, contentType, contentLength, responseSizeBytes, headers };
   } catch (error: any) {
     const reason = error?.message || String(error);
     log({ url, failed: true, reason });
@@ -271,7 +295,7 @@ async function fetchWithDiagnostics(url: string, timeoutMs: number) {
       throw new ChannelLoadError({
         code: "timeout",
         reason: `timeout após ${timeoutMs}ms`,
-        message: "Timeout ao buscar a lista",
+        message: "A origem não respondeu a tempo para este ambiente/app, embora a lista possa funcionar em outros players.",
         httpStatus: 504,
       });
     }
@@ -363,7 +387,7 @@ async function fetchPlaylistWithRetry(url: string) {
   throw new ChannelLoadError({
     code: "timeout",
     reason: "origem não respondeu após retries",
-    message: "A origem demorou para responder (HTTP 504). Tente novamente mais tarde.",
+    message: "A origem não respondeu a tempo para este ambiente/app, embora a lista possa funcionar em outros players.",
     httpStatus: 504,
   });
 }
@@ -490,7 +514,7 @@ async function resolveChannelsFromSource(sourceUrl: string, requestedType: Reque
     }),
   );
 
-  const { response, body, preview, responseTimeMs, contentType, contentLength, responseSizeBytes, headers } = await fetchPlaylistWithRetry(sourceUrl);
+  const { response, body, preview, responseTimeMs, dnsLookupMs, contentType, contentLength, responseSizeBytes, headers } = await fetchPlaylistWithRetry(sourceUrl);
 
   if (response.status === 429) {
     throw new ChannelLoadError({
@@ -502,6 +526,7 @@ async function resolveChannelsFromSource(sourceUrl: string, requestedType: Reque
       upstreamStatusText: response.statusText,
       upstreamHeaders: headers,
       responseTimeMs,
+      dnsLookupMs,
       responseSizeBytes,
       contentType,
       contentLength,
@@ -519,6 +544,7 @@ async function resolveChannelsFromSource(sourceUrl: string, requestedType: Reque
       upstreamStatusText: response.statusText,
       upstreamHeaders: headers,
       responseTimeMs,
+      dnsLookupMs,
       responseSizeBytes,
       contentType,
       contentLength,
@@ -536,6 +562,7 @@ async function resolveChannelsFromSource(sourceUrl: string, requestedType: Reque
       upstreamStatusText: response.statusText,
       upstreamHeaders: headers,
       responseTimeMs,
+      dnsLookupMs,
       responseSizeBytes,
       contentType,
       contentLength,
@@ -553,6 +580,7 @@ async function resolveChannelsFromSource(sourceUrl: string, requestedType: Reque
       upstreamStatusText: response.statusText,
       upstreamHeaders: headers,
       responseTimeMs,
+      dnsLookupMs,
       responseSizeBytes,
       contentType,
       contentLength,
@@ -564,12 +592,13 @@ async function resolveChannelsFromSource(sourceUrl: string, requestedType: Reque
     throw new ChannelLoadError({
       code: "timeout",
       reason: `upstream respondeu ${response.status} ${response.statusText || ""}`.trim(),
-      message: "A origem demorou para responder (HTTP 504). Tente novamente mais tarde.",
+      message: "A origem não respondeu a tempo para este ambiente/app, embora a lista possa funcionar em outros players.",
       httpStatus: 504,
       upstreamStatus: response.status,
       upstreamStatusText: response.statusText,
       upstreamHeaders: headers,
       responseTimeMs,
+      dnsLookupMs,
       responseSizeBytes,
       contentType,
       contentLength,
@@ -587,6 +616,7 @@ async function resolveChannelsFromSource(sourceUrl: string, requestedType: Reque
       upstreamStatusText: response.statusText,
       upstreamHeaders: headers,
       responseTimeMs,
+      dnsLookupMs,
       responseSizeBytes,
       contentType,
       contentLength,
@@ -604,6 +634,7 @@ async function resolveChannelsFromSource(sourceUrl: string, requestedType: Reque
       upstreamStatusText: response.statusText,
       upstreamHeaders: headers,
       responseTimeMs,
+      dnsLookupMs,
       responseSizeBytes,
       contentType,
       contentLength,
@@ -639,6 +670,8 @@ function toApiError(error: ChannelLoadError): ApiErrorPayload {
     message: error.message,
     diagnostics: {
       responseTime: error.responseTimeMs,
+      dnsLookupMs: error.dnsLookupMs,
+      connectTimeMs: error.connectTimeMs,
       contentType: error.contentType,
       contentLength: error.contentLength,
       responseSize: error.responseSizeBytes,
@@ -681,6 +714,7 @@ async function loadAllItemsWithCache(sourceUrl: string): Promise<NormalizedChann
 }
 
 export default async function handler(req: any, res: any) {
+  const routeStartedAt = Date.now();
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -710,6 +744,13 @@ export default async function handler(req: any, res: any) {
         generatedAt: new Date().toISOString(),
       },
     };
+    console.log(JSON.stringify({
+      scope: "playlist-route",
+      outcome: "success",
+      totalRouteMs: Date.now() - routeStartedAt,
+      originCallCount,
+      duplicateRequestCount,
+    }));
     res.status(200).json(payload);
     return;
   } catch (error) {
@@ -728,9 +769,25 @@ export default async function handler(req: any, res: any) {
             stale: true,
           },
         } satisfies ApiSuccessPayload);
+        console.warn(JSON.stringify({
+          scope: "playlist-route",
+          outcome: "stale-cache-fallback",
+          reason: mapped.code,
+          totalRouteMs: Date.now() - routeStartedAt,
+          originCallCount,
+          duplicateRequestCount,
+        }));
         return;
       }
     }
+    console.error(JSON.stringify({
+      scope: "playlist-route",
+      outcome: "error",
+      reason: mapped.code,
+      totalRouteMs: Date.now() - routeStartedAt,
+      originCallCount,
+      duplicateRequestCount,
+    }));
     res.status(mapped.httpStatus).json(toApiError(mapped));
     return;
   }
