@@ -42,6 +42,12 @@ const toProxyUrl = (url: string) => {
   return `/api/stream?url=${encodeURIComponent(url)}`;
 };
 
+const extractExtension = (url: string) => {
+  const withoutQuery = url.split('?')[0];
+  const match = withoutQuery.match(/\.([a-z0-9]+)$/i);
+  return match?.[1]?.toLowerCase() || 'sem_extensao';
+};
+
 const buildPlayableCandidates = (url: string) => {
   const candidates = new Set<string>();
   const normalized = normalize(url);
@@ -206,6 +212,34 @@ export default function Player() {
   const directPlaybackUrl = currentPlaybackCandidates[playbackCandidateIndex] || currentChannel?.url || '';
   const playbackUrl = directPlaybackUrl ? toProxyUrl(directPlaybackUrl) : '';
 
+  useEffect(() => {
+    if (channels.length === 0) return;
+    const typeCounts = channels.reduce(
+      (acc, item) => {
+        const type = item.type || 'unknown';
+        if (type === 'live') acc.live += 1;
+        else if (type === 'movie') acc.movie += 1;
+        else if (type === 'series') acc.series += 1;
+        return acc;
+      },
+      { live: 0, movie: 0, series: 0 },
+    );
+
+    const groups = Array.from(
+      new Set(
+        channels
+          .map((item) => item.group?.trim())
+          .filter((group): group is string => Boolean(group)),
+      ),
+    ).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+
+    console.info('[DIAG] Totais da lista', {
+      total: channels.length,
+      byType: typeCounts,
+      groupTitles: groups,
+    });
+  }, [channels]);
+
   const jumpToNextChannel = () => {
     if (!currentChannel || filteredChannels.length === 0) return;
     const currentIndex = filteredChannels.findIndex((item) => item.url === currentChannel.url);
@@ -218,6 +252,13 @@ export default function Player() {
 
   const handlePlaybackError = (reason?: string) => {
     const isVodLike = currentChannel?.type === 'movie' || currentChannel?.type === 'series';
+    console.warn('[DIAG] Falha de reprodução', {
+      channel: currentChannel?.name,
+      type: currentChannel?.type || 'unknown',
+      reason: reason || 'sem_mensagem',
+      candidateIndex: playbackCandidateIndex,
+      candidatesTotal: currentPlaybackCandidates.length,
+    });
 
     if (playbackCandidateIndex + 1 < currentPlaybackCandidates.length) {
       setPlaybackCandidateIndex((prev) => prev + 1);
@@ -245,6 +286,16 @@ export default function Player() {
 
     const normalized = directPlaybackUrl.toLowerCase();
     const isHlsSource = normalized.includes('.m3u8') || normalized.includes('m3u8');
+    const strategy = isHlsSource && Hls.isSupported() ? 'hls.js' : 'video-src-direto';
+
+    console.info('[DIAG] Estratégia de player', {
+      strategy,
+      channel: currentChannel?.name,
+      type: currentChannel?.type || 'unknown',
+      candidateIndex: playbackCandidateIndex,
+      directPlaybackUrl,
+      playbackUrl,
+    });
 
     const playVideo = () => {
       video
@@ -403,7 +454,17 @@ export default function Player() {
                   {visibleChannels.map((channel, i) => (
                     <button
                       key={`${channel.url}-${i}`}
-                      onClick={() => { setCurrentChannel(channel); setPlaybackCandidateIndex(0); setError(''); }}
+                      onClick={() => {
+                        console.info('[DIAG] Item selecionado', {
+                          name: channel.name,
+                          type: channel.type || 'unknown',
+                          url: channel.url,
+                          extension: extractExtension(channel.url),
+                        });
+                        setCurrentChannel(channel);
+                        setPlaybackCandidateIndex(0);
+                        setError('');
+                      }}
                       className={`w-full text-left p-3 rounded-lg text-sm transition-all mb-1 flex items-center gap-3 ${
                         currentChannel?.url === channel.url
                           ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20'
