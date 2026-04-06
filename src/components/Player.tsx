@@ -13,6 +13,7 @@ type ContentTab = 'all' | 'live' | 'movie' | 'series';
 
 const CHANNEL_CACHE_KEY = 'iptv_channels_cache_v2';
 const VISIBLE_PAGE_SIZE = 300;
+const VOD_BROWSER_EXTENSIONS = new Set(['mp4', 'webm', 'ogg', 'm4v', 'mov']);
 
 const normalize = (text?: string) => (text || '').toLowerCase();
 
@@ -46,6 +47,19 @@ const extractExtension = (url: string) => {
   const withoutQuery = url.split('?')[0];
   const match = withoutQuery.match(/\.([a-z0-9]+)$/i);
   return match?.[1]?.toLowerCase() || 'sem_extensao';
+};
+
+const canPlayHlsNatively = () => {
+  if (typeof document === 'undefined') return false;
+  const probe = document.createElement('video');
+  return probe.canPlayType('application/vnd.apple.mpegurl') !== '';
+};
+
+const isBrowserCompatibleVodUrl = (url: string) => {
+  const ext = extractExtension(url);
+  if (VOD_BROWSER_EXTENSIONS.has(ext)) return true;
+  if (ext === 'm3u8') return canPlayHlsNatively();
+  return false;
 };
 
 const buildPlayableCandidates = (url: string) => {
@@ -100,6 +114,8 @@ export default function Player() {
   const [visibleCount, setVisibleCount] = useState(VISIBLE_PAGE_SIZE);
   const [playbackCandidateIndex, setPlaybackCandidateIndex] = useState(0);
   const [loadedTypes, setLoadedTypes] = useState<Set<ContentTab>>(new Set(['all']));
+  const [vodPlaybackFailed, setVodPlaybackFailed] = useState(false);
+  const [vodFailureReason, setVodFailureReason] = useState('');
 
   const apiUrl = '/api/channels';
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -202,6 +218,8 @@ export default function Player() {
 
   useEffect(() => {
     setPlaybackCandidateIndex(0);
+    setVodPlaybackFailed(false);
+    setVodFailureReason('');
   }, [currentChannel?.url]);
 
   const currentPlaybackCandidates = useMemo(() => {
@@ -212,6 +230,12 @@ export default function Player() {
 
   const directPlaybackUrl = currentPlaybackCandidates[playbackCandidateIndex] || currentChannel?.url || '';
   const playbackUrl = directPlaybackUrl ? toProxyUrl(directPlaybackUrl) : '';
+  const currentExtension = extractExtension(currentChannel?.url || '');
+  const canTryInternalVod =
+    !!currentChannel &&
+    currentChannel.type !== 'live' &&
+    isBrowserCompatibleVodUrl(currentChannel.url) &&
+    !vodPlaybackFailed;
 
   useEffect(() => {
     if (channels.length === 0) return;
@@ -343,12 +367,17 @@ export default function Player() {
 
   useEffect(() => {
     if (!currentChannel || currentChannel.type === 'live') return;
+    const strategy = isBrowserCompatibleVodUrl(currentChannel.url) ? 'vod:video-interno' : 'vod:nova-aba-direta';
     console.info('[DIAG] Estratégia de player', {
-      strategy: 'iframe-link-direto',
+      strategy,
       channel: currentChannel.name,
       type: currentChannel.type,
       url: currentChannel.url,
+      extension: extractExtension(currentChannel.url),
     });
+    if (strategy === 'vod:nova-aba-direta') {
+      setVodFailureReason('Origem/extensão não compatível com reprodução interna no navegador.');
+    }
   }, [currentChannel]);
 
   return (
@@ -384,15 +413,43 @@ export default function Player() {
                       handlePlaybackError();
                     }}
                   />
+                ) : canTryInternalVod ? (
+                  <video
+                    key={currentChannel.url}
+                    controls
+                    autoPlay
+                    muted
+                    playsInline
+                    className="w-full h-full bg-black"
+                    src={currentChannel.url}
+                    onLoadedData={() => {
+                      setError('');
+                      setVodFailureReason('');
+                    }}
+                    onError={() => {
+                      const reason = 'Erro de carregamento no <video> para VOD.';
+                      console.warn('[DIAG] Falha de reprodução', {
+                        type: currentChannel.type,
+                        url: currentChannel.url,
+                        extension: currentExtension,
+                        reason,
+                      });
+                      setVodPlaybackFailed(true);
+                      setVodFailureReason(reason);
+                    }}
+                  />
                 ) : (
-                  <div className="absolute inset-0 bg-zinc-900">
-                    <iframe
-                      key={currentChannel.url}
-                      title={currentChannel.name}
-                      src={currentChannel.url}
-                      className="w-full h-full border-0"
-                      allow="autoplay; fullscreen"
-                    />
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-zinc-900 text-center px-4">
+                    <p className="text-sm text-gray-300">
+                      {vodFailureReason || 'Esta origem não permite reprodução interna no navegador.'}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => window.open(currentChannel.url, '_blank', 'noopener,noreferrer')}
+                      className="text-xs px-3 py-1 rounded bg-blue-600 hover:bg-blue-500 transition-colors"
+                    >
+                      Abrir em nova aba
+                    </button>
                   </div>
                 )
               ) : (
@@ -410,10 +467,10 @@ export default function Player() {
               </div>
             )}
 
-            {currentChannel && currentChannel.type !== 'live' && (
-              <div className="flex items-center justify-between p-3 bg-white/5 border border-white/10 rounded-xl">
+            {currentChannel && currentChannel.type !== 'live' && (vodPlaybackFailed || !isBrowserCompatibleVodUrl(currentChannel.url)) && (
+              <div className="flex items-center justify-between p-3 bg-white/5 border border-white/10 rounded-xl gap-3">
                 <p className="text-xs text-gray-400 truncate">
-                  Abrindo {currentChannel.type === 'series' ? 'série' : 'filme'} por link direto.
+                  Fallback ativo para {currentChannel.type === 'series' ? 'série' : 'filme'}.
                 </p>
                 <button
                   type="button"
