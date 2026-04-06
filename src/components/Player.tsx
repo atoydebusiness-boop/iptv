@@ -48,40 +48,6 @@ const extractExtension = (url: string) => {
   return match?.[1]?.toLowerCase() || 'sem_extensao';
 };
 
-type MovieUrlKind = 'm3u8' | 'mp4' | 'other';
-
-const detectMovieUrlKind = (url: string): MovieUrlKind => {
-  const ext = extractExtension(url);
-  if (ext === 'm3u8') return 'm3u8';
-  if (ext === 'mp4') return 'mp4';
-  return 'other';
-};
-
-const buildMoviePlaybackCandidates = (url: string) => {
-  const candidates = new Set<string>();
-  const kind = detectMovieUrlKind(url);
-
-  const add = (candidate: string) => {
-    candidates.add(candidate);
-    if (candidate.startsWith('http://')) {
-      candidates.add(candidate.replace('http://', 'https://'));
-    }
-  };
-
-  add(url);
-
-  if (kind === 'm3u8') {
-    add(url.replace(/\.m3u8(\?.*)?$/i, '.mp4$1'));
-  } else if (kind === 'mp4') {
-    add(url.replace(/\.mp4(\?.*)?$/i, '.m3u8$1'));
-  } else {
-    add(`${url}.m3u8`);
-    add(`${url}.mp4`);
-  }
-
-  return [...candidates];
-};
-
 const buildPlayableCandidates = (url: string) => {
   const candidates = new Set<string>();
   const normalized = normalize(url);
@@ -240,10 +206,8 @@ export default function Player() {
 
   const currentPlaybackCandidates = useMemo(() => {
     if (!currentChannel) return [];
-    if (currentChannel.type === 'movie') {
-      return buildMoviePlaybackCandidates(currentChannel.url);
-    }
-    return buildPlayableCandidates(currentChannel.url);
+    if (currentChannel.type === 'live') return buildPlayableCandidates(currentChannel.url);
+    return [currentChannel.url];
   }, [currentChannel]);
 
   const directPlaybackUrl = currentPlaybackCandidates[playbackCandidateIndex] || currentChannel?.url || '';
@@ -314,7 +278,7 @@ export default function Player() {
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !playbackUrl || !directPlaybackUrl) return;
+    if (!video || !playbackUrl || !directPlaybackUrl || currentChannel?.type !== 'live') return;
 
     if (hlsRef.current) {
       hlsRef.current.destroy();
@@ -323,19 +287,12 @@ export default function Player() {
 
     const normalized = directPlaybackUrl.toLowerCase();
     const isHlsSource = normalized.includes('.m3u8') || normalized.includes('m3u8');
-    const movieUrlKind = currentChannel?.type === 'movie' ? detectMovieUrlKind(directPlaybackUrl) : null;
-    const strategy = (() => {
-      if (currentChannel?.type !== 'movie') return isHlsSource && Hls.isSupported() ? 'hls.js' : 'video-src-direto';
-      if (movieUrlKind === 'm3u8' && Hls.isSupported()) return 'movie:hls.js';
-      if (movieUrlKind === 'mp4') return 'movie:video-mp4';
-      return 'movie:video-fallback';
-    })();
+    const strategy = isHlsSource && Hls.isSupported() ? 'hls.js' : 'video-src-direto';
 
     console.info('[DIAG] Estratégia de player', {
       strategy,
       channel: currentChannel?.name,
       type: currentChannel?.type || 'unknown',
-      movieUrlKind,
       candidateIndex: playbackCandidateIndex,
       directPlaybackUrl,
       playbackUrl,
@@ -382,7 +339,17 @@ export default function Player() {
       video.removeAttribute('src');
       video.load();
     };
-  }, [playbackUrl, directPlaybackUrl]);
+  }, [playbackUrl, directPlaybackUrl, currentChannel?.type]);
+
+  useEffect(() => {
+    if (!currentChannel || currentChannel.type === 'live') return;
+    console.info('[DIAG] Estratégia de player', {
+      strategy: 'iframe-link-direto',
+      channel: currentChannel.name,
+      type: currentChannel.type,
+      url: currentChannel.url,
+    });
+  }, [currentChannel]);
 
   return (
     <section id="player" className="py-20 bg-zinc-950">
@@ -401,21 +368,33 @@ export default function Player() {
                   <p className="text-gray-400 animate-pulse">Carregando lista M3U...</p>
                 </div>
               ) : currentChannel ? (
-                <video
-                  ref={videoRef}
-                  controls
-                  autoPlay
-                  muted
-                  playsInline
-                  className="w-full h-full bg-black"
-                  onLoadedData={() => {
-                    setError('');
-                  }}
-                  onError={() => {
-                    console.error('Video Element Error:', directPlaybackUrl);
-                    handlePlaybackError();
-                  }}
-                />
+                currentChannel.type === 'live' ? (
+                  <video
+                    ref={videoRef}
+                    controls
+                    autoPlay
+                    muted
+                    playsInline
+                    className="w-full h-full bg-black"
+                    onLoadedData={() => {
+                      setError('');
+                    }}
+                    onError={() => {
+                      console.error('Video Element Error:', directPlaybackUrl);
+                      handlePlaybackError();
+                    }}
+                  />
+                ) : (
+                  <div className="absolute inset-0 bg-zinc-900">
+                    <iframe
+                      key={currentChannel.url}
+                      title={currentChannel.name}
+                      src={currentChannel.url}
+                      className="w-full h-full border-0"
+                      allow="autoplay; fullscreen"
+                    />
+                  </div>
+                )
               ) : (
                 <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-500 bg-zinc-900">
                   <Play className="w-16 h-16 mb-4 opacity-20" />
@@ -428,6 +407,21 @@ export default function Player() {
               <div className="flex items-center gap-2 p-4 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl">
                 <AlertCircle className="w-5 h-5 shrink-0" />
                 <p className="text-sm">{error}</p>
+              </div>
+            )}
+
+            {currentChannel && currentChannel.type !== 'live' && (
+              <div className="flex items-center justify-between p-3 bg-white/5 border border-white/10 rounded-xl">
+                <p className="text-xs text-gray-400 truncate">
+                  Abrindo {currentChannel.type === 'series' ? 'série' : 'filme'} por link direto.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => window.open(currentChannel.url, '_blank', 'noopener,noreferrer')}
+                  className="text-xs px-3 py-1 rounded bg-blue-600 hover:bg-blue-500 transition-colors"
+                >
+                  Abrir em nova aba
+                </button>
               </div>
             )}
 
