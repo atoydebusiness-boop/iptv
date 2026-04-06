@@ -9,6 +9,20 @@ interface Channel {
   type?: 'live' | 'movie' | 'series' | 'unknown';
 }
 
+interface SeriesEpisode {
+  id: string;
+  episode_num?: number;
+  title: string;
+  container_extension: string;
+  url: string;
+}
+
+interface SeriesDetails {
+  seriesId: string;
+  seasons: string[];
+  episodesBySeason: Record<string, SeriesEpisode[]>;
+}
+
 type ContentTab = 'all' | 'live' | 'movie' | 'series';
 
 const CHANNEL_CACHE_KEY = 'iptv_channels_cache_v2';
@@ -60,6 +74,15 @@ const isBrowserCompatibleVodUrl = (url: string) => {
   if (VOD_BROWSER_EXTENSIONS.has(ext)) return true;
   if (ext === 'm3u8') return canPlayHlsNatively();
   return false;
+};
+
+const extractSeriesId = (url: string) => {
+  try {
+    const parsed = new URL(url);
+    return parsed.searchParams.get('series_id')?.trim() || '';
+  } catch {
+    return '';
+  }
 };
 
 const buildPlayableCandidates = (url: string) => {
@@ -116,10 +139,53 @@ export default function Player() {
   const [loadedTypes, setLoadedTypes] = useState<Set<ContentTab>>(new Set(['all']));
   const [vodPlaybackFailed, setVodPlaybackFailed] = useState(false);
   const [vodFailureReason, setVodFailureReason] = useState('');
+  const [seriesCache, setSeriesCache] = useState<Record<string, SeriesDetails>>({});
+  const [seriesLoading, setSeriesLoading] = useState(false);
+  const [seriesError, setSeriesError] = useState('');
+  const [selectedSeason, setSelectedSeason] = useState('');
+  const [selectedEpisodeId, setSelectedEpisodeId] = useState('');
 
   const apiUrl = '/api/channels';
+  const seriesApiUrl = '/api/series';
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
+
+  const loadSeriesDetails = async (seriesChannel: Channel) => {
+    const seriesId = extractSeriesId(seriesChannel.url);
+    console.info('[DIAG] Série selecionada', { seriesId, url: seriesChannel.url });
+    if (!seriesId) {
+      setSeriesError('Não foi possível identificar series_id desta série.');
+      return;
+    }
+
+    if (seriesCache[seriesChannel.url]) {
+      const cached = seriesCache[seriesChannel.url];
+      const firstSeason = cached.seasons[0] || '';
+      setSelectedSeason(firstSeason);
+      setSelectedEpisodeId(cached.episodesBySeason[firstSeason]?.[0]?.id || '');
+      setSeriesError('');
+      return;
+    }
+
+    setSeriesLoading(true);
+    setSeriesError('');
+    try {
+      const response = await fetch(`${seriesApiUrl}?url=${encodeURIComponent(seriesChannel.url)}`, { cache: 'no-store' });
+      if (!response.ok) {
+        const raw = await response.text();
+        throw new Error(raw || 'Falha ao carregar episódios da série.');
+      }
+      const details = (await response.json()) as SeriesDetails;
+      setSeriesCache((prev) => ({ ...prev, [seriesChannel.url]: details }));
+      const firstSeason = details.seasons[0] || '';
+      setSelectedSeason(firstSeason);
+      setSelectedEpisodeId(details.episodesBySeason[firstSeason]?.[0]?.id || '');
+    } catch (err: any) {
+      setSeriesError(err?.message || 'Erro ao carregar série.');
+    } finally {
+      setSeriesLoading(false);
+    }
+  };
 
   const setInitialChannel = (list: Channel[]) => {
     const preferredGloboChannel = list.find((channel) => normalize(channel.name).includes('globo'));
@@ -220,21 +286,36 @@ export default function Player() {
     setPlaybackCandidateIndex(0);
     setVodPlaybackFailed(false);
     setVodFailureReason('');
+    if (currentChannel?.type === 'series') {
+      loadSeriesDetails(currentChannel);
+    } else {
+      setSeriesError('');
+      setSelectedSeason('');
+      setSelectedEpisodeId('');
+    }
   }, [currentChannel?.url]);
+
+  const selectedSeriesDetails = currentChannel?.type === 'series' ? seriesCache[currentChannel.url] : undefined;
+  const selectedSeasonEpisodes =
+    selectedSeriesDetails && selectedSeason ? selectedSeriesDetails.episodesBySeason[selectedSeason] || [] : [];
+  const selectedEpisode =
+    selectedSeasonEpisodes.find((episode) => episode.id === selectedEpisodeId) || selectedSeasonEpisodes[0];
 
   const currentPlaybackCandidates = useMemo(() => {
     if (!currentChannel) return [];
     if (currentChannel.type === 'live') return buildPlayableCandidates(currentChannel.url);
+    if (currentChannel.type === 'series') return selectedEpisode ? [selectedEpisode.url] : [];
     return [currentChannel.url];
-  }, [currentChannel]);
+  }, [currentChannel, selectedEpisode]);
 
   const directPlaybackUrl = currentPlaybackCandidates[playbackCandidateIndex] || currentChannel?.url || '';
   const playbackUrl = directPlaybackUrl ? toProxyUrl(directPlaybackUrl) : '';
-  const currentExtension = extractExtension(currentChannel?.url || '');
+  const currentExtension = extractExtension(directPlaybackUrl || currentChannel?.url || '');
   const canTryInternalVod =
     !!currentChannel &&
     currentChannel.type !== 'live' &&
-    isBrowserCompatibleVodUrl(currentChannel.url) &&
+    !!directPlaybackUrl &&
+    isBrowserCompatibleVodUrl(directPlaybackUrl) &&
     !vodPlaybackFailed;
 
   useEffect(() => {
@@ -367,18 +448,21 @@ export default function Player() {
 
   useEffect(() => {
     if (!currentChannel || currentChannel.type === 'live') return;
-    const strategy = isBrowserCompatibleVodUrl(currentChannel.url) ? 'vod:video-interno' : 'vod:nova-aba-direta';
+    const targetUrl = currentChannel.type === 'series' ? selectedEpisode?.url || '' : currentChannel.url;
+    const strategy = targetUrl
+      ? (isBrowserCompatibleVodUrl(targetUrl) ? 'vod:video-interno' : 'vod:nova-aba-direta')
+      : 'series:aguardando-episodio';
     console.info('[DIAG] Estratégia de player', {
       strategy,
       channel: currentChannel.name,
       type: currentChannel.type,
-      url: currentChannel.url,
-      extension: extractExtension(currentChannel.url),
+      url: targetUrl || currentChannel.url,
+      extension: extractExtension(targetUrl || currentChannel.url),
     });
     if (strategy === 'vod:nova-aba-direta') {
       setVodFailureReason('Origem/extensão não compatível com reprodução interna no navegador.');
     }
-  }, [currentChannel]);
+  }, [currentChannel, selectedEpisode?.id]);
 
   return (
     <section id="player" className="py-20 bg-zinc-950">
@@ -415,13 +499,13 @@ export default function Player() {
                   />
                 ) : canTryInternalVod ? (
                   <video
-                    key={currentChannel.url}
+                    key={directPlaybackUrl}
                     controls
                     autoPlay
                     muted
                     playsInline
                     className="w-full h-full bg-black"
-                    src={currentChannel.url}
+                    src={directPlaybackUrl}
                     onLoadedData={() => {
                       setError('');
                       setVodFailureReason('');
@@ -430,7 +514,7 @@ export default function Player() {
                       const reason = 'Erro de carregamento no <video> para VOD.';
                       console.warn('[DIAG] Falha de reprodução', {
                         type: currentChannel.type,
-                        url: currentChannel.url,
+                        url: directPlaybackUrl || currentChannel.url,
                         extension: currentExtension,
                         reason,
                       });
@@ -445,7 +529,7 @@ export default function Player() {
                     </p>
                     <button
                       type="button"
-                      onClick={() => window.open(currentChannel.url, '_blank', 'noopener,noreferrer')}
+                      onClick={() => window.open(directPlaybackUrl || currentChannel.url, '_blank', 'noopener,noreferrer')}
                       className="text-xs px-3 py-1 rounded bg-blue-600 hover:bg-blue-500 transition-colors"
                     >
                       Abrir em nova aba
@@ -467,18 +551,76 @@ export default function Player() {
               </div>
             )}
 
-            {currentChannel && currentChannel.type !== 'live' && (vodPlaybackFailed || !isBrowserCompatibleVodUrl(currentChannel.url)) && (
+            {currentChannel && currentChannel.type !== 'live' && (vodPlaybackFailed || !isBrowserCompatibleVodUrl(directPlaybackUrl || currentChannel.url)) && (
               <div className="flex items-center justify-between p-3 bg-white/5 border border-white/10 rounded-xl gap-3">
                 <p className="text-xs text-gray-400 truncate">
                   Fallback ativo para {currentChannel.type === 'series' ? 'série' : 'filme'}.
                 </p>
                 <button
                   type="button"
-                  onClick={() => window.open(currentChannel.url, '_blank', 'noopener,noreferrer')}
+                  onClick={() => window.open(directPlaybackUrl || currentChannel.url, '_blank', 'noopener,noreferrer')}
                   className="text-xs px-3 py-1 rounded bg-blue-600 hover:bg-blue-500 transition-colors"
                 >
                   Abrir em nova aba
                 </button>
+              </div>
+            )}
+
+            {currentChannel?.type === 'series' && (
+              <div className="p-4 bg-white/5 border border-white/10 rounded-2xl space-y-4">
+                <h4 className="font-semibold text-sm">Temporadas e episódios</h4>
+                {seriesLoading && <p className="text-xs text-gray-400">Carregando temporadas...</p>}
+                {seriesError && <p className="text-xs text-red-400">{seriesError}</p>}
+                {!seriesLoading && !seriesError && selectedSeriesDetails && (
+                  <>
+                    <div className="flex flex-wrap gap-2">
+                      {selectedSeriesDetails.seasons.map((season) => (
+                        <button
+                          key={season}
+                          type="button"
+                          onClick={() => {
+                            setSelectedSeason(season);
+                            const firstEpisode = selectedSeriesDetails.episodesBySeason[season]?.[0];
+                            setSelectedEpisodeId(firstEpisode?.id || '');
+                          }}
+                          className={`text-xs px-3 py-1 rounded ${
+                            selectedSeason === season ? 'bg-blue-600 text-white' : 'bg-black text-gray-300 hover:bg-white/10'
+                          }`}
+                        >
+                          Temporada {season}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="max-h-56 overflow-y-auto space-y-2 pr-1">
+                      {(selectedSeriesDetails.episodesBySeason[selectedSeason] || []).map((episode) => (
+                        <button
+                          key={episode.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedEpisodeId(episode.id);
+                            setVodPlaybackFailed(false);
+                            setVodFailureReason('');
+                            console.info('[DIAG] Episódio selecionado', {
+                              seriesId: selectedSeriesDetails.seriesId,
+                              season: selectedSeason,
+                              episodeId: episode.id,
+                              episodeNum: episode.episode_num,
+                              url: episode.url,
+                              extension: episode.container_extension,
+                            });
+                          }}
+                          className={`w-full text-left text-xs p-2 rounded border ${
+                            selectedEpisodeId === episode.id
+                              ? 'border-blue-500 bg-blue-600/20 text-white'
+                              : 'border-white/10 bg-black/60 text-gray-300 hover:bg-white/10'
+                          }`}
+                        >
+                          Ep. {episode.episode_num || '-'} — {episode.title}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
               </div>
             )}
 
