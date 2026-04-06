@@ -120,7 +120,7 @@ function extractXtreamCredentials(rawUrl: string): XtreamCredentials | null {
   }
 }
 
-async function fetchXtreamJson<T>(url: string, timeoutMs = 7000): Promise<T> {
+async function fetchXtreamJson<T>(url: string, timeoutMs = 20000): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -221,12 +221,10 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
 async function resolveChannels(sourceUrl: string, requestedType: RequestedType): Promise<Channel[]> {
   const candidateUrls = buildCandidateUrls(sourceUrl);
   let lastError = "Falha ao buscar a lista M3U.";
-  let lastTriedUrl = "";
 
-  for (const url of candidateUrls) {
-    lastTriedUrl = url;
+  const fetchCandidate = async (url: string) => {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 7000);
+    const timeout = setTimeout(() => controller.abort(), 12000);
 
     try {
       const response = await fetch(url, {
@@ -242,37 +240,43 @@ async function resolveChannels(sourceUrl: string, requestedType: RequestedType):
       const responseText = await response.text();
 
       if (!response.ok) {
-        lastError = `IPTV Server returned ${response.status} para ${url}`;
-        continue;
+        throw new Error(`IPTV Server returned ${response.status} para ${url}`);
       }
       if (isLikelyNotFoundPage(responseText)) {
-        lastError = `Servidor respondeu NOT_FOUND para ${url}`;
-        continue;
+        throw new Error(`Servidor respondeu NOT_FOUND para ${url}`);
       }
       if (!responseText.includes("#EXTM3U")) {
-        lastError = `Resposta inválida em ${url} (não retornou M3U).`;
-        continue;
+        throw new Error(`Resposta inválida em ${url} (não retornou M3U).`);
       }
 
       const parsedChannels = parseM3U(responseText);
       const channels = filterByRequestedType(parsedChannels, requestedType);
+
       if (channels.length > 0) return channels;
+      if (requestedType !== "all" && parsedChannels.length > 0) return parsedChannels;
 
-      if (requestedType !== "all" && parsedChannels.length > 0) {
-        return parsedChannels;
-      }
-
-      lastError = `M3U sem itens reproduzíveis em ${url}.`;
-    } catch (err: any) {
-      lastError = err?.message || `Erro de rede ao buscar ${url}`;
+      throw new Error(`M3U sem itens reproduzíveis em ${url}.`);
     } finally {
       clearTimeout(timeout);
     }
+  };
+
+  try {
+    return await Promise.any(candidateUrls.map((url) => fetchCandidate(url)));
+  } catch (error: any) {
+    if (error instanceof AggregateError && Array.isArray(error.errors)) {
+      const reasons = error.errors
+        .map((reason) => reason?.message || String(reason))
+        .filter(Boolean);
+      if (reasons.length > 0) {
+        lastError = reasons[reasons.length - 1];
+      }
+    } else {
+      lastError = error?.message || String(error);
+    }
   }
 
-  const failureContext = `${lastError}${lastTriedUrl ? ` | Última tentativa: ${lastTriedUrl}` : ""}`;
-  console.warn(`M3U falhou: ${failureContext}. Tentando Xtream API...`);
-
+  console.warn(`M3U falhou: ${lastError}. Tentando Xtream API...`);
   return buildChannelsFromXtream(sourceUrl, requestedType);
 }
 

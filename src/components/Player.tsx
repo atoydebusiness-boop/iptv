@@ -127,7 +127,7 @@ export default function Player() {
     setError('');
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 20000);
+      const timeout = setTimeout(() => controller.abort(), 60000);
       const targetUrl = `${apiUrl}?type=${requestedType}`;
       const response = await fetch(targetUrl, { cache: 'no-store', signal: controller.signal });
       clearTimeout(timeout);

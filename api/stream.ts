@@ -124,8 +124,13 @@ export default async function handler(req: any, res: any) {
     return;
   }
 
+  if (req.method !== 'GET') {
+    res.status(405).json({ error: 'Method Not Allowed' });
+    return;
+  }
+
   const raw = typeof req.query?.url === 'string' ? req.query.url : '';
-  const sourceUrl = decodeURIComponent(raw || '').trim();
+  const sourceUrl = String(raw || '').trim();
 
   if (!isAbsoluteHttp(sourceUrl)) {
     res.status(400).json({ error: 'Invalid stream URL' });
@@ -179,13 +184,14 @@ export default async function handler(req: any, res: any) {
       return;
     }
 
-    const buffer = Buffer.from(await upstream.arrayBuffer());
     res.status(upstream.status);
     const passthroughHeaders = ['content-type', 'accept-ranges', 'content-range', 'content-length'];
     for (const key of passthroughHeaders) {
       const value = upstream.headers.get(key);
       if (value) res.setHeader(key, value);
     }
+
+    const buffer = Buffer.from(await upstream.arrayBuffer());
     res.send(buffer);
   } catch (error: any) {
     res.status(502).json({ error: 'Stream proxy failed', details: error?.message || 'Unknown error' });
