@@ -15,50 +15,48 @@ const getSessionStorageKey = () => {
 };
 
 export default function ConversionPopup() {
-  const [open, setOpen] = useState(false);
-  const [clickCount, setClickCount] = useState(0);
-  const [canTrigger, setCanTrigger] = useState(false);
+  const [stage, setStage] = useState<'five' | 'fifteen' | null>(null);
   const storageKey = useMemo(() => getSessionStorageKey(), []);
+  const fiveMinuteSeenKey = `${storageKey}_five`;
+  const fifteenMinuteSeenKey = `${storageKey}_fifteen`;
 
   const closePopup = () => {
-    localStorage.setItem(storageKey, '1');
-    setOpen(false);
-    setCanTrigger(false);
+    if (stage === 'five') {
+      localStorage.setItem(fiveMinuteSeenKey, '1');
+    }
+    if (stage === 'fifteen') {
+      localStorage.setItem(fifteenMinuteSeenKey, '1');
+    }
+    setStage(null);
   };
 
   useEffect(() => {
-    const alreadySeen = localStorage.getItem(storageKey) === '1';
-    if (alreadySeen) return;
-
-    setCanTrigger(true);
-    const delayMs = 24000;
-    const timerId = window.setTimeout(() => {
-      setOpen(true);
-    }, delayMs);
-
-    const onClick = () => {
-      setClickCount((prev) => prev + 1);
+    const showFiveMinutePrompt = () => {
+      if (localStorage.getItem(fiveMinuteSeenKey) === '1') return;
+      setStage('five');
     };
 
-    window.addEventListener('click', onClick, { capture: true });
+    const showFifteenMinutePrompt = () => {
+      if (localStorage.getItem(fifteenMinuteSeenKey) === '1') return;
+      setStage('fifteen');
+    };
+
+    const fiveMinuteTimerId = window.setTimeout(showFiveMinutePrompt, 5 * 60 * 1000);
+    const fifteenMinuteTimerId = window.setTimeout(showFifteenMinutePrompt, 15 * 60 * 1000);
+
     return () => {
-      clearTimeout(timerId);
-      window.removeEventListener('click', onClick, { capture: true });
+      clearTimeout(fiveMinuteTimerId);
+      clearTimeout(fifteenMinuteTimerId);
     };
-  }, [storageKey]);
+  }, [fiveMinuteSeenKey, fifteenMinuteSeenKey]);
 
-  useEffect(() => {
-    if (!canTrigger || open) return;
-    if (clickCount >= 2) {
-      setOpen(true);
-    }
-  }, [clickCount, canTrigger, open]);
-
-  if (!open) return null;
+  if (!stage) return null;
 
   return (
-    <div className="fixed inset-0 z-[80] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="relative w-full max-w-lg rounded-3xl border border-white/15 bg-gradient-to-br from-zinc-950 via-zinc-900 to-indigo-950 shadow-2xl p-6 md:p-8 animate-in fade-in zoom-in-95 duration-200">
+    <div className="fixed bottom-5 right-5 z-[80] w-[calc(100%-2rem)] max-w-md">
+      <div className={`relative rounded-2xl border bg-gradient-to-br from-zinc-950 via-zinc-900 to-indigo-950 shadow-2xl p-5 md:p-6 animate-in fade-in slide-in-from-bottom-3 duration-200 ${
+        stage === 'fifteen' ? 'border-blue-400/40' : 'border-white/15'
+      }`}>
         <button
           type="button"
           onClick={closePopup}
@@ -68,12 +66,21 @@ export default function ConversionPopup() {
           <X className="w-5 h-5" />
         </button>
 
-        <h3 className="text-2xl md:text-3xl font-bold mb-3">🔥 Libere Tudo Agora</h3>
-        <p className="text-gray-300 leading-relaxed mb-6">
-          Você está usando o modo teste do UltraStream.
-          <br />
-          Assine agora e tenha acesso completo a canais, filmes e séries com qualidade e estabilidade.
-        </p>
+        {stage === 'five' ? (
+          <>
+            <h3 className="text-xl md:text-2xl font-bold mb-3">🔥 Gostando do UltraStream?</h3>
+            <p className="text-gray-300 leading-relaxed mb-5">
+              Continue com acesso completo e sem interrupções quando quiser.
+            </p>
+          </>
+        ) : (
+          <>
+            <h3 className="text-xl md:text-2xl font-bold mb-3">Você já testou bastante.</h3>
+            <p className="text-gray-300 leading-relaxed mb-5">
+              Libere acesso completo para continuar sem limitações.
+            </p>
+          </>
+        )}
 
         <div className="flex flex-col gap-3">
           <a
