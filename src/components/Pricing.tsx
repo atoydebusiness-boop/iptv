@@ -15,6 +15,13 @@ const plans = [
     period: "/3 meses",
     features: ["2 Telas Simultâneas", "4K Ultra HD", "Canais + Filmes + Séries", "Suporte VIP 24h", "Desconto Especial"],
     recommended: true
+  },
+  {
+    name: "Anual",
+    price: "249,90",
+    period: "/ano",
+    features: ["2 Telas Simultâneas", "4K Ultra HD", "Canais + Filmes + Séries", "Suporte VIP 24h", "Melhor Custo Benefício"],
+    recommended: false
   }
 ];
 
