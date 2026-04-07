@@ -6,7 +6,7 @@ const plans = [
     name: "Mensal",
     price: "29,90",
     period: "/mês",
-    features: ["1 Tela Simultânea", "4K Ultra HD", "Canais + Filmes + Séries", "Suporte 24h"],
+    features: ["Todos", "4K Ultra HD", "Canais + Filmes + Séries", "Suporte 24h"],
     recommended: false
   },
   {
@@ -15,13 +15,6 @@ const plans = [
     period: "/3 meses",
     features: ["2 Telas Simultâneas", "4K Ultra HD", "Canais + Filmes + Séries", "Suporte VIP 24h", "Desconto Especial"],
     recommended: true
-  },
-  {
-    name: "Anual",
-    price: "249,90",
-    period: "/ano",
-    features: ["3 Telas Simultâneas", "4K Ultra HD", "Canais + Filmes + Séries", "Suporte VIP 24h", "Melhor Custo Benefício"],
-    recommended: false
   }
 ];
 
