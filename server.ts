@@ -523,8 +523,14 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
+    const publicPath = path.join(process.cwd(), 'public');
     app.use(express.static(distPath));
+    app.use(express.static(publicPath));
     app.get('*', (req, res) => {
+      if (path.extname(req.path)) {
+        res.status(404).end();
+        return;
+      }
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
