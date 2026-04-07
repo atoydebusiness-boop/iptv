@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Hls from 'hls.js';
 import { Play, List, Search, AlertCircle, Zap } from 'lucide-react';
+import { trackEvent } from '../lib/analytics';
 
 interface Channel {
   name: string;
@@ -128,6 +129,7 @@ const buildPlayableCandidates = (url: string) => {
 };
 
 export default function Player() {
+  const WHATSAPP_SUBSCRIBE_URL = 'https://wa.me/5561993099265?text=Olá%2C%20venho%20do%20site%20UltraStreamTV%20e%20quero%20assinar';
   const [channels, setChannels] = useState<Channel[]>([]);
   const [currentChannel, setCurrentChannel] = useState<Channel | null>(null);
   const [loading, setLoading] = useState(false);
@@ -138,12 +140,14 @@ export default function Player() {
   const [playbackCandidateIndex, setPlaybackCandidateIndex] = useState(0);
   const [loadedTypes, setLoadedTypes] = useState<Set<ContentTab>>(new Set(['all']));
   const [vodPlaybackFailed, setVodPlaybackFailed] = useState(false);
-  const [vodFailureReason, setVodFailureReason] = useState('');
+  const [showPremiumModal, setShowPremiumModal] = useState(false);
   const [seriesCache, setSeriesCache] = useState<Record<string, SeriesDetails>>({});
   const [seriesLoading, setSeriesLoading] = useState(false);
   const [seriesError, setSeriesError] = useState('');
+  const [listNotice, setListNotice] = useState('');
   const [selectedSeason, setSelectedSeason] = useState('');
   const [selectedEpisodeId, setSelectedEpisodeId] = useState('');
+  const lastValidChannelsRef = useRef<Channel[]>([]);
 
   const apiUrl = '/api/channels';
   const seriesApiUrl = '/api/series';
@@ -201,6 +205,7 @@ export default function Player() {
           const normalizedCache = normalizeChannels(parsed);
           setChannels(normalizedCache);
           setInitialChannel(normalizedCache);
+          lastValidChannelsRef.current = normalizedCache;
         }
       }
     } catch (err) {
@@ -211,14 +216,40 @@ export default function Player() {
   }, []);
 
   const loadChannels = async (requestedType: ContentTab = "all") => {
+    const MAX_ATTEMPTS = 2;
+    const REQUEST_TIMEOUT_MS = 12000;
+    const RETRY_DELAY_MS = 700;
+
     setLoading(true);
     setError('');
+    setListNotice('');
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 20000);
       const targetUrl = `${apiUrl}?type=${requestedType}`;
-      const response = await fetch(targetUrl, { cache: 'no-store', signal: controller.signal });
-      clearTimeout(timeout);
+      let response: Response | null = null;
+      let lastFetchError: any = null;
+
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+        try {
+          response = await fetch(targetUrl, { cache: 'no-store', signal: controller.signal });
+          if (response.ok) break;
+          lastFetchError = new Error(`HTTP ${response.status}`);
+        } catch (fetchErr: any) {
+          lastFetchError = fetchErr;
+        } finally {
+          clearTimeout(timeout);
+        }
+
+        if (attempt < MAX_ATTEMPTS) {
+          await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+        }
+      }
+
+      if (!response) {
+        throw lastFetchError || new Error('Falha ao carregar lista do servidor.');
+      }
+
       if (!response.ok) {
         const errorRaw = await response.text();
         let errorMessage = 'Falha ao carregar lista do servidor.';
@@ -241,13 +272,22 @@ export default function Player() {
         const merged = requestedType === 'all' ? normalizedData : [...prev, ...normalizedData];
         const deduped = Array.from(new Map(merged.map((item) => [item.url, item])).values());
         setInitialChannel(deduped);
+        lastValidChannelsRef.current = deduped;
         localStorage.setItem(CHANNEL_CACHE_KEY, JSON.stringify(deduped.slice(0, 5000)));
         return deduped;
       });
       setLoadedTypes((prev) => new Set(prev).add(requestedType));
     } catch (err: any) {
       const message = err?.name === 'AbortError' ? 'Timeout ao carregar lista do servidor.' : err.message;
-      setError(`Erro: ${message}. Verifique se sua lista está ativa ou tente novamente.`);
+      const cachedList = lastValidChannelsRef.current;
+      if (cachedList.length > 0) {
+        setChannels((prev) => (prev.length > 0 ? prev : cachedList));
+        setInitialChannel(cachedList);
+        setListNotice('A lista demorou para responder. Exibindo dados anteriores.');
+        setError('');
+      } else {
+        setError(`Erro: ${message}. Verifique se sua lista está ativa ou tente novamente.`);
+      }
       console.error(err);
     } finally {
       setLoading(false);
@@ -285,7 +325,7 @@ export default function Player() {
   useEffect(() => {
     setPlaybackCandidateIndex(0);
     setVodPlaybackFailed(false);
-    setVodFailureReason('');
+    setShowPremiumModal(false);
     if (currentChannel?.type === 'series') {
       loadSeriesDetails(currentChannel);
     } else {
@@ -373,7 +413,9 @@ export default function Player() {
     }
 
     if (isVodLike) {
-      setError(reason || 'Não foi possível reproduzir este item. Tente outro filme/série da lista.');
+      setVodPlaybackFailed(true);
+      setShowPremiumModal(true);
+      setError('');
       return;
     }
 
@@ -460,21 +502,22 @@ export default function Player() {
       extension: extractExtension(targetUrl || currentChannel.url),
     });
     if (strategy === 'vod:nova-aba-direta') {
-      setVodFailureReason('Origem/extensão não compatível com reprodução interna no navegador.');
+      setVodPlaybackFailed(true);
+      setShowPremiumModal(true);
     }
   }, [currentChannel, selectedEpisode?.id]);
 
   return (
-    <section id="player" className="py-20 bg-zinc-950">
-      <div className="max-w-7xl mx-auto px-4">
+    <section id="player" className="py-20 bg-zinc-950 overflow-x-hidden">
+      <div className="max-w-7xl mx-auto px-4 w-full">
         <div className="text-center mb-12">
           <h2 className="text-3xl md:text-4xl font-bold mb-4">Web Player M3U</h2>
           <p className="text-gray-400">A lista já entra carregada, abre tentando formatos alternativos e tem filtros para ao vivo, filmes e séries.</p>
         </div>
 
-        <div className="grid lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-2 space-y-6">
-            <div className="bg-black rounded-2xl overflow-hidden aspect-video border border-white/10 shadow-2xl relative group">
+        <div className="grid lg:grid-cols-3 gap-6 lg:gap-8 items-start">
+          <div className="lg:col-span-2 space-y-4 md:space-y-6 min-w-0">
+            <div className="bg-black rounded-2xl overflow-hidden aspect-video w-full border border-white/10 shadow-2xl relative group">
               {loading && channels.length === 0 ? (
                 <div className="absolute inset-0 flex flex-col items-center justify-center text-blue-500 bg-zinc-900">
                   <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
@@ -508,32 +551,22 @@ export default function Player() {
                     src={directPlaybackUrl}
                     onLoadedData={() => {
                       setError('');
-                      setVodFailureReason('');
                     }}
                     onError={() => {
-                      const reason = 'Erro de carregamento no <video> para VOD.';
                       console.warn('[DIAG] Falha de reprodução', {
                         type: currentChannel.type,
                         url: directPlaybackUrl || currentChannel.url,
                         extension: currentExtension,
-                        reason,
+                        reason: 'vod_internal_playback_failed',
                       });
                       setVodPlaybackFailed(true);
-                      setVodFailureReason(reason);
+                      setShowPremiumModal(true);
                     }}
                   />
                 ) : (
                   <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-zinc-900 text-center px-4">
-                    <p className="text-sm text-gray-300">
-                      {vodFailureReason || 'Esta origem não permite reprodução interna no navegador.'}
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => window.open(directPlaybackUrl || currentChannel.url, '_blank', 'noopener,noreferrer')}
-                      className="text-xs px-3 py-1 rounded bg-blue-600 hover:bg-blue-500 transition-colors"
-                    >
-                      Abrir em nova aba
-                    </button>
+                    <Play className="w-12 h-12 text-blue-500/70" />
+                    <p className="text-sm text-gray-300">Conteúdo premium disponível para assinantes.</p>
                   </div>
                 )
               ) : (
@@ -551,18 +584,10 @@ export default function Player() {
               </div>
             )}
 
-            {currentChannel && currentChannel.type !== 'live' && (vodPlaybackFailed || !isBrowserCompatibleVodUrl(directPlaybackUrl || currentChannel.url)) && (
-              <div className="flex items-center justify-between p-3 bg-white/5 border border-white/10 rounded-xl gap-3">
-                <p className="text-xs text-gray-400 truncate">
-                  Fallback ativo para {currentChannel.type === 'series' ? 'série' : 'filme'}.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => window.open(directPlaybackUrl || currentChannel.url, '_blank', 'noopener,noreferrer')}
-                  className="text-xs px-3 py-1 rounded bg-blue-600 hover:bg-blue-500 transition-colors"
-                >
-                  Abrir em nova aba
-                </button>
+            {listNotice && (
+              <div className="flex items-center gap-2 p-3 bg-white/5 border border-white/10 text-gray-300 rounded-xl">
+                <AlertCircle className="w-4 h-4 shrink-0 text-yellow-400" />
+                <p className="text-xs md:text-sm">{listNotice}</p>
               </div>
             )}
 
@@ -599,7 +624,6 @@ export default function Player() {
                           onClick={() => {
                             setSelectedEpisodeId(episode.id);
                             setVodPlaybackFailed(false);
-                            setVodFailureReason('');
                             console.info('[DIAG] Episódio selecionado', {
                               seriesId: selectedSeriesDetails.seriesId,
                               season: selectedSeason,
@@ -635,7 +659,7 @@ export default function Player() {
             </div>
           </div>
 
-          <div className="bg-zinc-900 border border-white/10 rounded-2xl flex flex-col h-[600px]">
+          <div className="bg-zinc-900 border border-white/10 rounded-2xl flex flex-col h-[55vh] min-h-[420px] lg:h-[600px] min-w-0 overflow-hidden">
             <div className="p-4 border-b border-white/10">
               <div className="flex items-center gap-2 mb-4">
                 <List className="w-5 h-5 text-blue-500" />
@@ -644,7 +668,7 @@ export default function Player() {
                   {filteredChannels.length} itens
                 </span>
               </div>
-              <div className="grid grid-cols-4 gap-2 mb-3">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
                 {([
                   { id: 'all', label: 'Tudo' },
                   { id: 'live', label: 'Ao vivo' },
@@ -698,6 +722,10 @@ export default function Player() {
                           url: channel.url,
                           extension: extractExtension(channel.url),
                         });
+                        trackEvent('content_clicked', {
+                          route: window.location.pathname,
+                          itemType: (channel.type || 'unknown') as 'live' | 'movie' | 'series' | 'unknown',
+                        });
                         setCurrentChannel(channel);
                         setPlaybackCandidateIndex(0);
                         setError('');
@@ -733,6 +761,35 @@ export default function Player() {
           </div>
         </div>
       </div>
+
+      {showPremiumModal && currentChannel && currentChannel.type !== 'live' && (
+        <div className="fixed inset-0 z-[70] bg-black/75 backdrop-blur-sm flex items-center justify-center px-4">
+          <div className="w-full max-w-md bg-zinc-950 border border-white/10 rounded-2xl p-6 shadow-2xl">
+            <h3 className="text-2xl font-bold mb-3">Assine para liberar</h3>
+            <p className="text-sm text-gray-300 leading-relaxed mb-6">
+              Os filmes e séries completos estão disponíveis para assinantes.
+              Fale agora no WhatsApp e ative seu acesso completo com praticidade e suporte rápido.
+            </p>
+            <div className="flex flex-col gap-3">
+              <a
+                href={WHATSAPP_SUBSCRIBE_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-full text-center bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-4 rounded-xl transition-colors"
+              >
+                👉 Assinar via WhatsApp
+              </a>
+              <button
+                type="button"
+                onClick={() => setShowPremiumModal(false)}
+                className="w-full bg-white/5 hover:bg-white/10 text-gray-200 font-medium py-3 px-4 rounded-xl transition-colors"
+              >
+                Continuar navegando
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

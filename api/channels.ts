@@ -13,11 +13,22 @@ interface XtreamCredentials {
 
 type RequestedType = 'all' | 'live' | 'movie' | 'series';
 
+type CacheEntry = {
+  data: Channel[];
+  updatedAt: number;
+};
+
 const DEFAULT_IPTV_URL =
   "http://ryzeeng.pro:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
 
 const sanitizeUrl = (value: string) => value.replace(/\n/g, "").replace(/\r/g, "").trim();
 const SERIES_KEYWORDS = ['series', 'série', 'tv shows', 'season', 'temporada'];
+const CACHE_TTL_MS = 5 * 60 * 1000;
+const MAX_REFRESH_ATTEMPTS = 2;
+const REFRESH_RETRY_DELAY_MS = 700;
+
+const channelsCache: Partial<Record<RequestedType, CacheEntry>> = {};
+const inFlightRefresh: Partial<Record<RequestedType, Promise<Channel[]>>> = {};
 
 const hasSeriesKeyword = (value: string) => {
   const normalized = value.toLowerCase();
@@ -283,6 +294,76 @@ async function resolveChannels(sourceUrl: string, requestedType: RequestedType):
   return buildChannelsFromXtream(sourceUrl, requestedType);
 }
 
+function getCachedChannels(requestedType: RequestedType): CacheEntry | null {
+  const direct = channelsCache[requestedType];
+  if (direct?.data?.length) return direct;
+
+  if (requestedType !== 'all') {
+    const allCache = channelsCache.all;
+    if (allCache?.data?.length) {
+      const filtered = filterByRequestedType(allCache.data, requestedType);
+      if (filtered.length > 0) {
+        return { data: filtered, updatedAt: allCache.updatedAt };
+      }
+    }
+  }
+
+  return null;
+}
+
+function persistCache(requestedType: RequestedType, channels: Channel[]) {
+  const entry: CacheEntry = { data: channels, updatedAt: Date.now() };
+  channelsCache[requestedType] = entry;
+
+  if (requestedType === 'all') {
+    channelsCache.live = { data: filterByRequestedType(channels, 'live'), updatedAt: entry.updatedAt };
+    channelsCache.movie = { data: filterByRequestedType(channels, 'movie'), updatedAt: entry.updatedAt };
+    channelsCache.series = { data: filterByRequestedType(channels, 'series'), updatedAt: entry.updatedAt };
+  }
+}
+
+async function refreshChannelsWithRetry(sourceUrl: string, requestedType: RequestedType): Promise<Channel[]> {
+  let lastError: any;
+
+  for (let attempt = 1; attempt <= MAX_REFRESH_ATTEMPTS; attempt += 1) {
+    try {
+      const channels = await resolveChannels(sourceUrl, requestedType);
+      if (Array.isArray(channels) && channels.length > 0) {
+        persistCache(requestedType, channels);
+      }
+      return channels;
+    } catch (err) {
+      lastError = err;
+      if (attempt < MAX_REFRESH_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, REFRESH_RETRY_DELAY_MS));
+      }
+    }
+  }
+
+  throw lastError || new Error('Falha ao atualizar lista.');
+}
+
+function ensureBackgroundRefresh(sourceUrl: string, requestedType: RequestedType): Promise<Channel[]> {
+  const existing = inFlightRefresh[requestedType];
+  if (existing) return existing;
+
+  const refreshPromise = refreshChannelsWithRetry(sourceUrl, requestedType)
+    .catch((error) => {
+      const cached = getCachedChannels(requestedType);
+      if (cached?.data?.length) {
+        console.warn(`Atualização em background falhou para ${requestedType}, mantendo cache anterior.`, error);
+        return cached.data;
+      }
+      throw error;
+    })
+    .finally(() => {
+      delete inFlightRefresh[requestedType];
+    });
+
+  inFlightRefresh[requestedType] = refreshPromise;
+  return refreshPromise;
+}
+
 export default async function handler(req: any, res: any) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
@@ -304,7 +385,20 @@ export default async function handler(req: any, res: any) {
       : "all") as RequestedType;
 
     const sourceUrl = sanitizeUrl(process.env.IPTV_M3U_URL || DEFAULT_IPTV_URL);
-    const channels = await resolveChannels(sourceUrl, requestedType);
+    const cached = getCachedChannels(requestedType);
+
+    if (cached?.data?.length) {
+      const isExpired = Date.now() - cached.updatedAt > CACHE_TTL_MS;
+      if (isExpired) {
+        ensureBackgroundRefresh(sourceUrl, requestedType).catch((err) => {
+          console.warn(`Refresh assíncrono falhou para ${requestedType}.`, err);
+        });
+      }
+      res.status(200).json(cached.data);
+      return;
+    }
+
+    const channels = await ensureBackgroundRefresh(sourceUrl, requestedType);
     res.status(200).json(channels);
   } catch (error: any) {
     res.status(500).json({
