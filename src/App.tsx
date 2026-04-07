@@ -7,6 +7,7 @@ import React, { useEffect } from 'react';
 import Header from './components/Header';
 import Hero from './components/Hero';
 import Player from './components/Player';
+import ResellerBanner from './components/ResellerBanner';
 import Pricing from './components/Pricing';
 import WhatsAppButton from './components/WhatsAppButton';
 import ConversionPopup from './components/ConversionPopup';
@@ -44,6 +45,7 @@ export default function App() {
       <main>
         <Hero />
         <Player />
+        <ResellerBanner />
         <Pricing />
       </main>
       
