@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { trackEvent } from '../lib/analytics';
 
 const WHATSAPP_URL = 'https://wa.me/5561993099265?text=Olá%2C%20venho%20do%20site%20UltraStreamTV%20e%20quero%20assinar';
 const SESSION_ID_KEY = 'ultrastream_session_id';
@@ -21,6 +22,7 @@ export default function UsageLockOverlay() {
     const wasAlreadyLocked = localStorage.getItem(lockStorageKey) === '1';
     if (wasAlreadyLocked) {
       setLocked(true);
+      trackEvent('trial_blocked', { route: window.location.pathname, itemType: 'unknown' });
       return;
     }
 
@@ -28,6 +30,7 @@ export default function UsageLockOverlay() {
     const timerId = window.setTimeout(() => {
       setLocked(true);
       localStorage.setItem(lockStorageKey, '1');
+      trackEvent('trial_blocked', { route: window.location.pathname, itemType: 'unknown' });
     }, timeoutMs);
 
     return () => {

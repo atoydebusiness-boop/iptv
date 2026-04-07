@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { MessageCircle, X } from 'lucide-react';
+import { trackEvent } from '../lib/analytics';
 
 const WHATSAPP_URL = 'https://wa.me/5561993099265?text=Olá%2C%20venho%20do%20site%20UltraStreamTV%20e%20quero%20assinar';
 const SESSION_ID_KEY = 'ultrastream_session_id';
@@ -34,11 +35,13 @@ export default function ConversionPopup() {
     const showFiveMinutePrompt = () => {
       if (localStorage.getItem(fiveMinuteSeenKey) === '1') return;
       setStage('five');
+      trackEvent('trial_popup_shown', { route: window.location.pathname, itemType: 'unknown' });
     };
 
     const showFifteenMinutePrompt = () => {
       if (localStorage.getItem(fifteenMinuteSeenKey) === '1') return;
       setStage('fifteen');
+      trackEvent('trial_popup_shown', { route: window.location.pathname, itemType: 'unknown' });
     };
 
     const fiveMinuteTimerId = window.setTimeout(showFiveMinutePrompt, 5 * 60 * 1000);

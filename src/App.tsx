@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import Header from './components/Header';
 import Hero from './components/Hero';
 import Player from './components/Player';
@@ -11,8 +11,33 @@ import Pricing from './components/Pricing';
 import WhatsAppButton from './components/WhatsAppButton';
 import ConversionPopup from './components/ConversionPopup';
 import UsageLockOverlay from './components/UsageLockOverlay';
+import { getAnonSessionId, trackEvent } from './lib/analytics';
 
 export default function App() {
+  useEffect(() => {
+    const sessionId = getAnonSessionId();
+    const route = window.location.pathname;
+    fetch(`/api/test-started?sessionId=${encodeURIComponent(sessionId)}&route=${encodeURIComponent(route)}`, {
+      method: 'GET',
+      cache: 'no-store',
+      keepalive: true,
+    }).catch(() => {
+      // não bloqueia UX
+    });
+
+    const onClick = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      const anchor = target?.closest('a[href*="wa.me"]') as HTMLAnchorElement | null;
+      if (!anchor) return;
+      trackEvent('whatsapp_clicked', { route: window.location.pathname, itemType: 'unknown' });
+    };
+
+    window.addEventListener('click', onClick, { capture: true });
+    return () => {
+      window.removeEventListener('click', onClick, { capture: true });
+    };
+  }, []);
+
   return (
     <div className="min-h-screen bg-black text-white selection:bg-blue-500/30">
       <Header />

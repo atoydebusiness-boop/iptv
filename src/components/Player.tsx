@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Hls from 'hls.js';
 import { Play, List, Search, AlertCircle, Zap } from 'lucide-react';
+import { trackEvent } from '../lib/analytics';
 
 interface Channel {
   name: string;
@@ -720,6 +721,10 @@ export default function Player() {
                           type: channel.type || 'unknown',
                           url: channel.url,
                           extension: extractExtension(channel.url),
+                        });
+                        trackEvent('content_clicked', {
+                          route: window.location.pathname,
+                          itemType: (channel.type || 'unknown') as 'live' | 'movie' | 'series' | 'unknown',
                         });
                         setCurrentChannel(channel);
                         setPlaybackCandidateIndex(0);
