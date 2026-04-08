@@ -43,6 +43,23 @@ function rewriteM3U8(content: string, sourceUrl: string) {
     .join('\n');
 }
 
+function m3u8NeedsRewrite(content: string): boolean {
+  const lines = content.split(/\r?\n/);
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+
+    if (line.startsWith('#')) {
+      const uriMatch = line.match(/URI="([^"]+)"/i);
+      if (uriMatch?.[1] && !isAbsoluteHttp(uriMatch[1])) return true;
+      continue;
+    }
+
+    if (!isAbsoluteHttp(line)) return true;
+  }
+  return false;
+}
+
 function buildSourceCandidates(sourceUrl: string): string[] {
   const candidates = new Set<string>();
   const normalized = sourceUrl.toLowerCase();
@@ -171,14 +188,23 @@ export default async function handler(req: any, res: any) {
 
     if (contentType.includes('mpegurl') || finalSourceUrl.toLowerCase().includes('.m3u8')) {
       const m3u = await upstream.text();
-      const rewritten = rewriteM3U8(m3u, finalSourceUrl);
+      const shouldRewrite = m3u8NeedsRewrite(m3u);
+      const payload = shouldRewrite ? rewriteM3U8(m3u, finalSourceUrl) : m3u;
+      console.info('[stream-proxy] playlist_mode', {
+        mode: shouldRewrite ? 'rewrite' : 'passthrough',
+        source: finalSourceUrl,
+      });
       res.status(upstream.status);
       res.setHeader('content-type', 'application/vnd.apple.mpegurl');
       res.setHeader('cache-control', 'no-store');
-      res.send(rewritten);
+      res.send(payload);
       return;
     }
 
+    console.info('[stream-proxy] binary_mode', {
+      mode: 'proxy_binary',
+      source: finalSourceUrl,
+    });
     const buffer = Buffer.from(await upstream.arrayBuffer());
     res.status(upstream.status);
     const passthroughHeaders = ['content-type', 'accept-ranges', 'content-range', 'content-length'];
