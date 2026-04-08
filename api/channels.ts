@@ -3,6 +3,11 @@ interface Channel {
   url: string;
   group?: string;
   type?: "live" | "movie" | "series" | "unknown";
+  playback?: {
+    directUrl: string;
+    proxyUrl: string;
+    preferDirect: boolean;
+  };
 }
 
 interface XtreamCredentials {
@@ -22,6 +27,7 @@ const DEFAULT_IPTV_URL =
   "http://ryzeeng.pro:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
 
 const sanitizeUrl = (value: string) => value.replace(/\n/g, "").replace(/\r/g, "").trim();
+const toProxyUrl = (url: string) => `/api/stream?url=${encodeURIComponent(url)}`;
 const SERIES_KEYWORDS = ['series', 'série', 'tv shows', 'season', 'temporada'];
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const MAX_REFRESH_ATTEMPTS = 2;
@@ -89,6 +95,19 @@ function detectChannelType(channel: Channel): Exclude<Channel['type'], 'unknown'
 function filterByRequestedType(channels: Channel[], requestedType: RequestedType): Channel[] {
   if (requestedType === 'all') return channels;
   return channels.filter((channel) => detectChannelType(channel) === requestedType);
+}
+
+function withPlayback(channel: Channel): Channel {
+  const directUrl = channel.url;
+  const preferDirect = /^https?:\/\//i.test(directUrl);
+  return {
+    ...channel,
+    playback: {
+      directUrl,
+      proxyUrl: toProxyUrl(directUrl),
+      preferDirect,
+    },
+  };
 }
 
 function buildCandidateUrls(rawUrl: string): string[] {
@@ -191,12 +210,12 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
   if (liveItems.status === "fulfilled" && Array.isArray(liveItems.value)) {
     for (const item of liveItems.value) {
       if (!item.stream_id) continue;
-      channels.push({
+      channels.push(withPlayback({
         name: item.name?.trim() || `Live ${item.stream_id}`,
         group: item.category_name?.trim() || "Ao vivo",
         type: "live",
         url: `${baseUrl}/live/${username}/${password}/${item.stream_id}.m3u8`,
-      });
+      }));
     }
   }
 
@@ -204,12 +223,12 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
     for (const item of vodItems.value) {
       if (!item.stream_id) continue;
       const ext = (item.container_extension || "mp4").replace(/[^a-z0-9]/gi, "") || "mp4";
-      channels.push({
+      channels.push(withPlayback({
         name: item.name?.trim() || `Filme ${item.stream_id}`,
         group: item.category_name?.trim() || "Filmes",
         type: "movie",
         url: `${baseUrl}/movie/${username}/${password}/${item.stream_id}.${ext}`,
-      });
+      }));
     }
   }
 
@@ -217,12 +236,12 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
   if (seriesItems.status === "fulfilled" && Array.isArray(seriesItems.value)) {
     for (const item of seriesItems.value) {
       if (!item?.series_id) continue;
-      channels.push({
+      channels.push(withPlayback({
         name: item.name?.trim() || `Série ${item.series_id}`,
         group: item.category_name?.trim() || "Séries",
         type: "series",
         url: `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_series_info&series_id=${encodeURIComponent(String(item.series_id))}`,
-      });
+      }));
     }
   }
 
@@ -272,7 +291,7 @@ async function resolveChannels(sourceUrl: string, requestedType: RequestedType):
         continue;
       }
 
-      const parsedChannels = parseM3U(responseText);
+      const parsedChannels = parseM3U(responseText).map(withPlayback);
       const channels = filterByRequestedType(parsedChannels, requestedType);
       if (channels.length > 0) return channels;
 

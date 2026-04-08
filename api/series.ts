@@ -85,6 +85,11 @@ export default async function handler(req: any, res: any) {
       title: string;
       container_extension: string;
       url: string;
+      playback: {
+        directUrl: string;
+        proxyUrl: string;
+        preferDirect: boolean;
+      };
     }>> = {};
 
     for (const season of seasons) {
@@ -94,12 +99,18 @@ export default async function handler(req: any, res: any) {
         .map((episode) => {
           const id = String(episode.id);
           const ext = (episode.container_extension || 'mp4').replace(/[^a-z0-9]/gi, '') || 'mp4';
+          const directUrl = `${baseUrl}/series/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${encodeURIComponent(id)}.${ext}`;
           return {
             id,
             episode_num: episode.episode_num,
             title: episode.title?.trim() || `Episódio ${episode.episode_num || id}`,
             container_extension: ext,
-            url: `${baseUrl}/series/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${encodeURIComponent(id)}.${ext}`,
+            url: directUrl,
+            playback: {
+              directUrl,
+              proxyUrl: `/api/stream?url=${encodeURIComponent(directUrl)}`,
+              preferDirect: true,
+            },
           };
         });
     }

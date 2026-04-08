@@ -11,6 +11,11 @@ interface Channel {
   url: string;
   group?: string;
   type?: "live" | "movie" | "series" | "unknown";
+  playback?: {
+    directUrl: string;
+    proxyUrl: string;
+    preferDirect: boolean;
+  };
 }
 
 interface XtreamCredentials {
@@ -100,12 +105,12 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
   if (liveItems.status === "fulfilled" && Array.isArray(liveItems.value)) {
     for (const item of liveItems.value) {
       if (!item?.stream_id) continue;
-      channels.push({
+      channels.push(withPlayback({
         name: item.name?.trim() || `Live ${item.stream_id}`,
         group: item.category_name?.trim() || "Ao vivo",
         type: "live",
         url: `${baseUrl}/live/${username}/${password}/${item.stream_id}.m3u8`,
-      });
+      }));
     }
   }
 
@@ -113,12 +118,12 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
     for (const item of vodItems.value) {
       if (!item?.stream_id) continue;
       const ext = (item.container_extension || "mp4").replace(/[^a-z0-9]/gi, "") || "mp4";
-      channels.push({
+      channels.push(withPlayback({
         name: item.name?.trim() || `Filme ${item.stream_id}`,
         group: item.category_name?.trim() || "Filmes",
         type: "movie",
         url: `${baseUrl}/movie/${username}/${password}/${item.stream_id}.${ext}`,
-      });
+      }));
     }
   }
 
@@ -126,12 +131,12 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
   if (seriesItems.status === "fulfilled" && Array.isArray(seriesItems.value)) {
     for (const item of seriesItems.value) {
       if (!item?.series_id) continue;
-      channels.push({
+      channels.push(withPlayback({
         name: item.name?.trim() || `Série ${item.series_id}`,
         group: item.category_name?.trim() || "Séries",
         type: "series",
         url: `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_series_info&series_id=${encodeURIComponent(String(item.series_id))}`,
-      });
+      }));
     }
   }
 
@@ -159,6 +164,18 @@ function detectChannelType(channel: Channel): Exclude<Channel['type'], 'unknown'
 function filterByRequestedType(channels: Channel[], requestedType: RequestedType): Channel[] {
   if (requestedType === 'all') return channels;
   return channels.filter((channel) => detectChannelType(channel) === requestedType);
+}
+
+function withPlayback(channel: Channel): Channel {
+  const directUrl = channel.url;
+  return {
+    ...channel,
+    playback: {
+      directUrl,
+      proxyUrl: `/api/stream?url=${encodeURIComponent(directUrl)}`,
+      preferDirect: /^https?:\/\//i.test(directUrl),
+    },
+  };
 }
 
 function parseM3U(content: string): Channel[] {
@@ -190,12 +207,12 @@ function parseM3U(content: string): Channel[] {
       else if (normalizedUrl.includes("/movie/")) type = "movie";
       else if (normalizedUrl.includes("/series/")) type = "series";
 
-      channels.push({
+      channels.push(withPlayback({
         name: currentName || "Canal Sem Nome",
         url: line,
         group: currentGroup,
         type,
-      });
+      }));
       currentName = "";
       currentGroup = "";
     }
@@ -291,6 +308,20 @@ async function startServer() {
         }
       })
       .join('\n');
+  const m3u8NeedsRewrite = (content: string) => {
+    const lines = content.split(/\r?\n/);
+    for (const raw of lines) {
+      const line = raw.trim();
+      if (!line) continue;
+      if (line.startsWith('#')) {
+        const uriMatch = line.match(/URI="([^"]+)"/i);
+        if (uriMatch?.[1] && !isAbsoluteHttp(uriMatch[1])) return true;
+        continue;
+      }
+      if (!isAbsoluteHttp(line)) return true;
+    }
+    return false;
+  };
 
   const buildStreamCandidates = (sourceUrl: string) => {
     const candidates = new Set<string>();
@@ -414,14 +445,23 @@ async function startServer() {
       const contentType = upstream.headers.get('content-type') || '';
       if (contentType.includes('mpegurl') || finalSourceUrl.toLowerCase().includes('.m3u8')) {
         const m3u = await upstream.text();
-        const rewritten = rewriteM3U8(m3u, finalSourceUrl);
+        const shouldRewrite = m3u8NeedsRewrite(m3u);
+        const playlistPayload = shouldRewrite ? rewriteM3U8(m3u, finalSourceUrl) : m3u;
+        console.info('[stream-proxy] playlist_mode', {
+          mode: shouldRewrite ? 'rewrite' : 'passthrough',
+          source: finalSourceUrl,
+        });
         res.status(upstream.status);
         res.setHeader('content-type', 'application/vnd.apple.mpegurl');
         res.setHeader('cache-control', 'no-store');
-        res.send(rewritten);
+        res.send(playlistPayload);
         return;
       }
 
+      console.info('[stream-proxy] binary_mode', {
+        mode: 'proxy_binary',
+        source: finalSourceUrl,
+      });
       const buffer = Buffer.from(await upstream.arrayBuffer());
       res.status(upstream.status);
       for (const key of ['content-type', 'accept-ranges', 'content-range', 'content-length']) {
@@ -523,8 +563,14 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
+    const publicPath = path.join(process.cwd(), 'public');
     app.use(express.static(distPath));
+    app.use(express.static(publicPath));
     app.get('*', (req, res) => {
+      if (path.extname(req.path)) {
+        res.status(404).end();
+        return;
+      }
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

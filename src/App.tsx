@@ -12,12 +12,22 @@ import Pricing from './components/Pricing';
 import WhatsAppButton from './components/WhatsAppButton';
 import ConversionPopup from './components/ConversionPopup';
 import UsageLockOverlay from './components/UsageLockOverlay';
+import LegalPage from './components/LegalPage';
 import { getAnonSessionId, trackEvent } from './lib/analytics';
 
 export default function App() {
+  const pathname = window.location.pathname.toLowerCase();
+  const legalRouteMap: Record<string, 'terms' | 'privacy' | 'dmca'> = {
+    '/termos-de-uso': 'terms',
+    '/privacidade': 'privacy',
+    '/dmca': 'dmca',
+  };
+
+  const legalPageType = legalRouteMap[pathname];
+
   useEffect(() => {
     const sessionId = getAnonSessionId();
-    const route = window.location.pathname;
+    const route = pathname;
     fetch(`/api/test-started?sessionId=${encodeURIComponent(sessionId)}&route=${encodeURIComponent(route)}`, {
       method: 'GET',
       cache: 'no-store',
@@ -38,6 +48,10 @@ export default function App() {
       window.removeEventListener('click', onClick, { capture: true });
     };
   }, []);
+
+  if (legalPageType) {
+    return <LegalPage type={legalPageType} />;
+  }
 
   return (
     <div className="min-h-screen bg-black text-white selection:bg-blue-500/30">
@@ -61,9 +75,9 @@ export default function App() {
             © 2026 UltraStream IPTV. Todos os direitos reservados.
           </p>
           <div className="flex justify-center gap-6 text-xs text-gray-600">
-            <a href="#" className="hover:text-white transition-colors">Termos de Uso</a>
-            <a href="#" className="hover:text-white transition-colors">Privacidade</a>
-            <a href="#" className="hover:text-white transition-colors">DMCA</a>
+            <a href="/termos-de-uso" className="hover:text-white transition-colors">Termos de Uso</a>
+            <a href="/privacidade" className="hover:text-white transition-colors">Privacidade</a>
+            <a href="/dmca" className="hover:text-white transition-colors">DMCA</a>
           </div>
         </div>
       </footer>

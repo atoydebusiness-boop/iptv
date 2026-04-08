@@ -8,6 +8,11 @@ interface Channel {
   url: string;
   group?: string;
   type?: 'live' | 'movie' | 'series' | 'unknown';
+  playback?: {
+    directUrl: string;
+    proxyUrl: string;
+    preferDirect: boolean;
+  };
 }
 
 interface SeriesEpisode {
@@ -16,6 +21,11 @@ interface SeriesEpisode {
   title: string;
   container_extension: string;
   url: string;
+  playback?: {
+    directUrl: string;
+    proxyUrl: string;
+    preferDirect: boolean;
+  };
 }
 
 interface SeriesDetails {
@@ -138,6 +148,7 @@ export default function Player() {
   const [activeTab, setActiveTab] = useState<ContentTab>('all');
   const [visibleCount, setVisibleCount] = useState(VISIBLE_PAGE_SIZE);
   const [playbackCandidateIndex, setPlaybackCandidateIndex] = useState(0);
+  const [useProxyFallback, setUseProxyFallback] = useState(false);
   const [loadedTypes, setLoadedTypes] = useState<Set<ContentTab>>(new Set(['all']));
   const [vodPlaybackFailed, setVodPlaybackFailed] = useState(false);
   const [showPremiumModal, setShowPremiumModal] = useState(false);
@@ -324,6 +335,7 @@ export default function Player() {
 
   useEffect(() => {
     setPlaybackCandidateIndex(0);
+    setUseProxyFallback(false);
     setVodPlaybackFailed(false);
     setShowPremiumModal(false);
     if (currentChannel?.type === 'series') {
@@ -343,13 +355,15 @@ export default function Player() {
 
   const currentPlaybackCandidates = useMemo(() => {
     if (!currentChannel) return [];
-    if (currentChannel.type === 'live') return buildPlayableCandidates(currentChannel.url);
-    if (currentChannel.type === 'series') return selectedEpisode ? [selectedEpisode.url] : [];
-    return [currentChannel.url];
+    const channelDirectUrl = currentChannel.playback?.directUrl || currentChannel.url;
+    if (currentChannel.type === 'live') return buildPlayableCandidates(channelDirectUrl);
+    if (currentChannel.type === 'series') return selectedEpisode ? [selectedEpisode.playback?.directUrl || selectedEpisode.url] : [];
+    return [channelDirectUrl];
   }, [currentChannel, selectedEpisode]);
 
   const directPlaybackUrl = currentPlaybackCandidates[playbackCandidateIndex] || currentChannel?.url || '';
-  const playbackUrl = directPlaybackUrl ? toProxyUrl(directPlaybackUrl) : '';
+  const proxyPlaybackUrl = directPlaybackUrl ? toProxyUrl(directPlaybackUrl) : '';
+  const playbackUrl = useProxyFallback ? proxyPlaybackUrl : directPlaybackUrl;
   const currentExtension = extractExtension(directPlaybackUrl || currentChannel?.url || '');
   const canTryInternalVod =
     !!currentChannel &&
@@ -402,12 +416,26 @@ export default function Player() {
       channel: currentChannel?.name,
       type: currentChannel?.type || 'unknown',
       reason: reason || 'sem_mensagem',
+      mode: useProxyFallback ? 'proxy_fallback' : 'direct_first',
       candidateIndex: playbackCandidateIndex,
       candidatesTotal: currentPlaybackCandidates.length,
     });
 
+    if (!useProxyFallback && directPlaybackUrl) {
+      console.warn('[DIAG] Falha em URL direta, ativando fallback para proxy', {
+        channel: currentChannel?.name,
+        type: currentChannel?.type || 'unknown',
+        directPlaybackUrl,
+        proxyPlaybackUrl,
+      });
+      setUseProxyFallback(true);
+      setError('Falha na URL direta. Tentando via proxy...');
+      return;
+    }
+
     if (playbackCandidateIndex + 1 < currentPlaybackCandidates.length) {
       setPlaybackCandidateIndex((prev) => prev + 1);
+      setUseProxyFallback(false);
       setError('Tentando formato alternativo do mesmo item...');
       return;
     }
@@ -440,6 +468,7 @@ export default function Player() {
       strategy,
       channel: currentChannel?.name,
       type: currentChannel?.type || 'unknown',
+      mode: useProxyFallback ? 'proxy_fallback' : 'direct_first',
       candidateIndex: playbackCandidateIndex,
       directPlaybackUrl,
       playbackUrl,
@@ -486,16 +515,19 @@ export default function Player() {
       video.removeAttribute('src');
       video.load();
     };
-  }, [playbackUrl, directPlaybackUrl, currentChannel?.type]);
+  }, [playbackUrl, directPlaybackUrl, currentChannel?.type, useProxyFallback]);
 
   useEffect(() => {
     if (!currentChannel || currentChannel.type === 'live') return;
-    const targetUrl = currentChannel.type === 'series' ? selectedEpisode?.url || '' : currentChannel.url;
+    const targetUrl = currentChannel.type === 'series'
+      ? selectedEpisode?.playback?.directUrl || selectedEpisode?.url || ''
+      : currentChannel.playback?.directUrl || currentChannel.url;
     const strategy = targetUrl
       ? (isBrowserCompatibleVodUrl(targetUrl) ? 'vod:video-interno' : 'vod:nova-aba-direta')
       : 'series:aguardando-episodio';
     console.info('[DIAG] Estratégia de player', {
       strategy,
+      mode: useProxyFallback ? 'proxy_fallback' : 'direct_first',
       channel: currentChannel.name,
       type: currentChannel.type,
       url: targetUrl || currentChannel.url,
@@ -505,7 +537,7 @@ export default function Player() {
       setVodPlaybackFailed(true);
       setShowPremiumModal(true);
     }
-  }, [currentChannel, selectedEpisode?.id]);
+  }, [currentChannel, selectedEpisode?.id, useProxyFallback]);
 
   return (
     <section id="player" className="py-20 bg-zinc-950 overflow-x-hidden">
@@ -536,7 +568,18 @@ export default function Player() {
                       setError('');
                     }}
                     onError={() => {
-                      console.error('Video Element Error:', directPlaybackUrl);
+                      if (!useProxyFallback) {
+                        console.warn('[DIAG] Falha em URL direta, alternando para proxy', {
+                          channel: currentChannel.name,
+                          type: currentChannel.type,
+                          directPlaybackUrl,
+                          proxyPlaybackUrl,
+                        });
+                        setUseProxyFallback(true);
+                        setError('Falha na URL direta. Tentando via proxy...');
+                        return;
+                      }
+                      console.error('Video Element Error:', playbackUrl);
                       handlePlaybackError();
                     }}
                   />
@@ -548,16 +591,26 @@ export default function Player() {
                     muted
                     playsInline
                     className="w-full h-full bg-black"
-                    src={directPlaybackUrl}
+                    src={playbackUrl}
                     onLoadedData={() => {
                       setError('');
                     }}
                     onError={() => {
+                      if (!useProxyFallback) {
+                        console.warn('[DIAG] VOD falhou direto, alternando para proxy', {
+                          type: currentChannel.type,
+                          directPlaybackUrl,
+                          proxyPlaybackUrl,
+                        });
+                        setUseProxyFallback(true);
+                        setError('Falha na URL direta. Tentando via proxy...');
+                        return;
+                      }
                       console.warn('[DIAG] Falha de reprodução', {
                         type: currentChannel.type,
-                        url: directPlaybackUrl || currentChannel.url,
+                        url: playbackUrl || currentChannel.url,
                         extension: currentExtension,
-                        reason: 'vod_internal_playback_failed',
+                        reason: 'vod_internal_playback_failed_after_proxy_fallback',
                       });
                       setVodPlaybackFailed(true);
                       setShowPremiumModal(true);
