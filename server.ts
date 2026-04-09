@@ -2,6 +2,7 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
+import fs from "fs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -22,6 +23,13 @@ interface XtreamCredentials {
   baseUrl: string;
   username: string;
   password: string;
+}
+
+interface TrialUsageEntry {
+  count: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  blockedAt?: string;
 }
 
 type RequestedType = 'all' | 'live' | 'movie' | 'series';
@@ -226,6 +234,45 @@ async function startServer() {
 
   const DEFAULT_IPTV_URL =
     "http://ryzeeng.pro:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
+  const TRIAL_LIMIT_ENABLED = (process.env.TRIAL_LIMIT_ENABLED ?? "true") !== "false";
+  const TRIAL_MAX_USES = Math.max(1, Number(process.env.TRIAL_MAX_USES || 1));
+  const trialUsagePath = path.join(process.cwd(), "data", "trial-usage.json");
+  let trialUsageCache: Record<string, TrialUsageEntry> = {};
+
+  const ensureTrialUsageStore = () => {
+    const folder = path.dirname(trialUsagePath);
+    if (!fs.existsSync(folder)) {
+      fs.mkdirSync(folder, { recursive: true });
+    }
+    if (!fs.existsSync(trialUsagePath)) {
+      fs.writeFileSync(trialUsagePath, JSON.stringify({}, null, 2), "utf-8");
+    }
+  };
+
+  const loadTrialUsage = () => {
+    try {
+      ensureTrialUsageStore();
+      const raw = fs.readFileSync(trialUsagePath, "utf-8");
+      trialUsageCache = raw.trim() ? JSON.parse(raw) : {};
+    } catch {
+      trialUsageCache = {};
+    }
+  };
+
+  const persistTrialUsage = () => {
+    ensureTrialUsageStore();
+    fs.writeFileSync(trialUsagePath, JSON.stringify(trialUsageCache, null, 2), "utf-8");
+  };
+
+  const getClientTrialKey = (req: express.Request) => {
+    const ipCandidate = req.headers["x-forwarded-for"];
+    const ip =
+      (typeof ipCandidate === "string" ? ipCandidate.split(",")[0]?.trim() : req.socket.remoteAddress) || "unknown";
+    const userAgent = String(req.headers["user-agent"] || "unknown").slice(0, 180);
+    return `${ip}::${userAgent}`;
+  };
+
+  loadTrialUsage();
 
   const sanitizeUrl = (value: string) =>
     value
@@ -476,6 +523,35 @@ async function startServer() {
 
   // API route to proxy and parse M3U
   app.get("/api/channels", async (req, res) => {
+    if (TRIAL_LIMIT_ENABLED) {
+      const trialKey = getClientTrialKey(req);
+      const now = new Date().toISOString();
+      const current = trialUsageCache[trialKey];
+
+      if (current && current.count >= TRIAL_MAX_USES) {
+        trialUsageCache[trialKey] = {
+          ...current,
+          blockedAt: current.blockedAt || now,
+          lastSeenAt: now,
+        };
+        persistTrialUsage();
+        res.status(403).json({
+          error: "Acesso de teste bloqueado para este dispositivo/rede.",
+          details: `Limite atingido: ${TRIAL_MAX_USES} acesso(s).`,
+        });
+        return;
+      }
+
+      const updatedCount = (current?.count || 0) + 1;
+      trialUsageCache[trialKey] = {
+        count: updatedCount,
+        firstSeenAt: current?.firstSeenAt || now,
+        lastSeenAt: now,
+        blockedAt: updatedCount >= TRIAL_MAX_USES ? now : current?.blockedAt,
+      };
+      persistTrialUsage();
+    }
+
     try {
       console.log("Fetching M3U from IPTV server...");
       const requestedType = (["all", "live", "movie", "series"].includes(String(req.query?.type || "all"))
