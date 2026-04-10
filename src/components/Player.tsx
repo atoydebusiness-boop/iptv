@@ -39,6 +39,7 @@ type ContentTab = 'all' | 'live' | 'movie' | 'series';
 const CHANNEL_CACHE_KEY = 'iptv_channels_cache_v2';
 const VISIBLE_PAGE_SIZE = 300;
 const VOD_BROWSER_EXTENSIONS = new Set(['mp4', 'webm', 'ogg', 'm4v', 'mov']);
+const STREAM_ACCESS_TOKEN = (import.meta.env.VITE_STREAM_ACCESS_TOKEN || '').trim();
 
 const normalize = (text?: string) => (text || '').toLowerCase();
 
@@ -64,8 +65,13 @@ const normalizeChannels = (items: Channel[]): Channel[] =>
   items.map((item) => ({ ...item, type: inferTypeFromText(item) }));
 
 const toProxyUrl = (url: string) => {
-  if (url.startsWith('/api/stream?url=')) return url;
-  return `/api/stream?url=${encodeURIComponent(url)}`;
+  const appendToken = (baseUrl: string) =>
+    STREAM_ACCESS_TOKEN
+      ? `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(STREAM_ACCESS_TOKEN)}`
+      : baseUrl;
+
+  if (url.startsWith('/api/stream?url=')) return appendToken(url);
+  return appendToken(`/api/stream?url=${encodeURIComponent(url)}`);
 };
 
 const extractExtension = (url: string) => {
@@ -235,7 +241,9 @@ export default function Player() {
     setError('');
     setListNotice('');
     try {
-      const targetUrl = `${apiUrl}?type=${requestedType}`;
+      const targetUrl = STREAM_ACCESS_TOKEN
+        ? `${apiUrl}?type=${requestedType}&token=${encodeURIComponent(STREAM_ACCESS_TOKEN)}`
+        : `${apiUrl}?type=${requestedType}`;
       let response: Response | null = null;
       let lastFetchError: any = null;
 

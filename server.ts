@@ -232,8 +232,18 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  const DEFAULT_IPTV_URL =
-    "http://ryzeeng.pro:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
+  const sanitizeUrl = (value: string) =>
+    value
+      .replace(/\n/g, "")
+      .replace(/\r/g, "")
+      .trim();
+
+  const IPTV_M3U_URL = sanitizeUrl(process.env.IPTV_M3U_URL || "");
+  const STREAM_ACCESS_TOKEN = sanitizeUrl(process.env.STREAM_ACCESS_TOKEN || "");
+  const STREAM_HOST_ALLOWLIST = (process.env.STREAM_HOST_ALLOWLIST || "")
+    .split(",")
+    .map((host) => host.trim().toLowerCase())
+    .filter(Boolean);
   const TRIAL_LIMIT_ENABLED = (process.env.TRIAL_LIMIT_ENABLED ?? "true") !== "false";
   const TRIAL_MAX_USES = Math.max(1, Number(process.env.TRIAL_MAX_USES || 1));
   const trialUsagePath = path.join(process.cwd(), "data", "trial-usage.json");
@@ -274,17 +284,47 @@ async function startServer() {
 
   loadTrialUsage();
 
-  const sanitizeUrl = (value: string) =>
-    value
-      .replace(/\n/g, "")
-      .replace(/\r/g, "")
-      .trim();
+  const getHostFromUrl = (rawUrl: string) => {
+    try {
+      const parsed = new URL(rawUrl.startsWith("http") ? rawUrl : `http://${rawUrl}`);
+      return parsed.hostname.toLowerCase();
+    } catch {
+      return "";
+    }
+  };
+
+  const STREAM_ALLOWED_HOSTS = new Set<string>([
+    ...STREAM_HOST_ALLOWLIST,
+    getHostFromUrl(IPTV_M3U_URL),
+  ].filter(Boolean));
+
+  const isAllowedStreamUrl = (rawUrl: string) => {
+    try {
+      const parsed = new URL(rawUrl);
+      return STREAM_ALLOWED_HOSTS.has(parsed.hostname.toLowerCase());
+    } catch {
+      return false;
+    }
+  };
+
+  const extractTokenFromRequest = (req: express.Request) => {
+    const queryToken = typeof req.query.token === "string" ? req.query.token.trim() : "";
+    const headerToken = String(req.headers["x-access-token"] || "").trim();
+    const authHeader = String(req.headers.authorization || "").trim();
+    const bearerToken = authHeader.toLowerCase().startsWith("bearer ") ? authHeader.slice(7).trim() : "";
+    return queryToken || headerToken || bearerToken;
+  };
+
+  const ensureAuthorized = (req: express.Request, res: express.Response) => {
+    if (!STREAM_ACCESS_TOKEN) return true;
+    const incomingToken = extractTokenFromRequest(req);
+    if (incomingToken === STREAM_ACCESS_TOKEN) return true;
+    res.status(401).json({ error: "Unauthorized stream access." });
+    return false;
+  };
 
   const buildCandidateUrls = () => {
-    const rawUrl = process.env.IPTV_M3U_URL || DEFAULT_IPTV_URL;
-    const cleaned = sanitizeUrl(rawUrl);
-
-    if (!cleaned) return [];
+    if (!IPTV_M3U_URL) return [];
 
     const candidates = new Set<string>();
 
@@ -308,7 +348,7 @@ async function startServer() {
       }
     };
 
-    addUrlVariants(cleaned);
+    addUrlVariants(IPTV_M3U_URL);
     return [...candidates];
   };
 
@@ -318,7 +358,10 @@ async function startServer() {
   };
 
   const isAbsoluteHttp = (value: string) => /^https?:\/\//i.test(value);
-  const proxify = (url: string) => `/api/stream?url=${encodeURIComponent(url)}`;
+  const proxify = (url: string) => {
+    const tokenSuffix = STREAM_ACCESS_TOKEN ? `&token=${encodeURIComponent(STREAM_ACCESS_TOKEN)}` : "";
+    return `/api/stream?url=${encodeURIComponent(url)}${tokenSuffix}`;
+  };
   const STREAM_EXTENSIONS = ['m3u8', 'mp4', 'ts', 'mkv'];
   type SeriesInfoEpisode = { id?: string | number; container_extension?: string };
   type SeriesInfoPayload = { episodes?: Record<string, SeriesInfoEpisode[] | undefined> | SeriesInfoEpisode[] };
@@ -443,11 +486,18 @@ async function startServer() {
   };
 
   app.get('/api/stream', async (req, res) => {
+    if (!ensureAuthorized(req, res)) return;
+
     const rawUrl = typeof req.query.url === 'string' ? req.query.url : '';
     const sourceUrl = decodeURIComponent(rawUrl || '').trim();
 
     if (!isAbsoluteHttp(sourceUrl)) {
       res.status(400).json({ error: 'Invalid stream URL' });
+      return;
+    }
+
+    if (!isAllowedStreamUrl(sourceUrl)) {
+      res.status(403).json({ error: "Stream host is not allowed." });
       return;
     }
 
@@ -459,6 +509,10 @@ async function startServer() {
       let lastError = '';
 
       for (const candidateUrl of candidateUrls) {
+        if (!isAllowedStreamUrl(candidateUrl)) {
+          lastError = `Host bloqueado para ${candidateUrl}`;
+          continue;
+        }
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 12000);
         try {
@@ -523,6 +577,8 @@ async function startServer() {
 
   // API route to proxy and parse M3U
   app.get("/api/channels", async (req, res) => {
+    if (!ensureAuthorized(req, res)) return;
+
     if (TRIAL_LIMIT_ENABLED) {
       const trialKey = getClientTrialKey(req);
       const now = new Date().toISOString();
@@ -554,6 +610,9 @@ async function startServer() {
 
     try {
       console.log("Fetching M3U from IPTV server...");
+      if (!IPTV_M3U_URL) {
+        throw new Error("IPTV_M3U_URL não configurada no ambiente.");
+      }
       const requestedType = (["all", "live", "movie", "series"].includes(String(req.query?.type || "all"))
         ? String(req.query?.type || "all")
         : "all") as RequestedType;
@@ -618,7 +677,7 @@ async function startServer() {
         }
       }
 
-      const fallbackUrl = process.env.IPTV_M3U_URL || DEFAULT_IPTV_URL;
+      const fallbackUrl = IPTV_M3U_URL;
       const m3uFailureContext = `${lastError}${lastTriedUrl ? ` Última tentativa: ${lastTriedUrl}` : ""}`;
       console.warn(`M3U fetch falhou (${m3uFailureContext}). Tentando fallback Xtream API: ${fallbackUrl}`);
       const fallbackChannels = await buildChannelsFromXtream(sanitizeUrl(fallbackUrl), requestedType);
