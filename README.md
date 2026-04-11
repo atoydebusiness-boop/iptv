@@ -36,3 +36,8 @@ Este projeto agora foi ajustado para usar **somente variáveis de ambiente**:
 
 - Sem `IPTV_M3U_URL`, a API retorna erro e não usa fallback hardcoded.
 - Com `STREAM_HOST_ALLOWLIST`, a API bloqueia streams fora da lista permitida.
+
+## Troubleshooting rápido (Vercel)
+
+- Se aparecer `401` em `/api/channels` ou `/api/stream`, configure **também** `VITE_STREAM_ACCESS_TOKEN` (igual ao `STREAM_ACCESS_TOKEN`) e faça novo deploy.
+- Se ainda aparecer URL antiga no player, limpe o cache/localStorage do navegador e recarregue.

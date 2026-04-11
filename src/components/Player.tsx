@@ -36,7 +36,7 @@ interface SeriesDetails {
 
 type ContentTab = 'all' | 'live' | 'movie' | 'series';
 
-const CHANNEL_CACHE_KEY = 'iptv_channels_cache_v2';
+const CHANNEL_CACHE_KEY = 'iptv_channels_cache_v3';
 const VISIBLE_PAGE_SIZE = 300;
 const VOD_BROWSER_EXTENSIONS = new Set(['mp4', 'webm', 'ogg', 'm4v', 'mov']);
 const STREAM_ACCESS_TOKEN = (import.meta.env.VITE_STREAM_ACCESS_TOKEN || '').trim();
@@ -273,6 +273,12 @@ export default function Player() {
       }
 
       if (!response.ok) {
+        if (response.status === 401) {
+          localStorage.removeItem(CHANNEL_CACHE_KEY);
+          lastValidChannelsRef.current = [];
+          setChannels([]);
+          throw new Error('Acesso negado (401). Configure VITE_STREAM_ACCESS_TOKEN com o mesmo valor de STREAM_ACCESS_TOKEN no deploy.');
+        }
         const errorRaw = await response.text();
         let errorMessage = 'Falha ao carregar lista do servidor.';
         try {
