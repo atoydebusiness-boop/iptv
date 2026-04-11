@@ -32,8 +32,10 @@ const sanitizeUrl = (value: string) => value.replace(/\n/g, "").replace(/\r/g, "
 const toProxyUrl = (url: string) => `/api/stream?src=${encodeURIComponent(createSignedSourceToken(url))}`;
 const SERIES_KEYWORDS = ['series', 'série', 'tv shows', 'season', 'temporada'];
 const CACHE_TTL_MS = 5 * 60 * 1000;
-const MAX_REFRESH_ATTEMPTS = 2;
-const REFRESH_RETRY_DELAY_MS = 700;
+const MAX_REFRESH_ATTEMPTS = 1;
+const REFRESH_RETRY_DELAY_MS = 250;
+const MAX_CANDIDATE_URLS = 2;
+const M3U_FETCH_TIMEOUT_MS = 3500;
 
 const channelsCache: Partial<Record<RequestedType, CacheEntry>> = {};
 const inFlightRefresh: Partial<Record<RequestedType, Promise<Channel[]>>> = {};
@@ -147,7 +149,7 @@ function buildCandidateUrls(rawUrl: string): string[] {
     candidates.add(cleaned);
   }
 
-  return [...candidates];
+  return [...candidates].slice(0, MAX_CANDIDATE_URLS);
 }
 
 const isLikelyNotFoundPage = (content: string) => {
@@ -172,7 +174,7 @@ function extractXtreamCredentials(rawUrl: string): XtreamCredentials | null {
   }
 }
 
-async function fetchXtreamJson<T>(url: string, timeoutMs = 7000): Promise<T> {
+async function fetchXtreamJson<T>(url: string, timeoutMs = 3500): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -279,7 +281,7 @@ async function resolveChannels(sourceUrl: string, requestedType: RequestedType):
   for (const url of candidateUrls) {
     lastTriedUrl = url;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 7000);
+    const timeout = setTimeout(() => controller.abort(), M3U_FETCH_TIMEOUT_MS);
 
     try {
       const response = await fetch(url, {
