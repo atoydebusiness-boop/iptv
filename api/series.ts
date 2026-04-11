@@ -1,3 +1,5 @@
+import { createSignedSourceToken, resolveSignedSourceToken } from './_secure';
+
 interface RawEpisode {
   id?: string | number;
   episode_num?: number;
@@ -41,8 +43,11 @@ export default async function handler(req: any, res: any) {
     return;
   }
 
+  const rawSignedSource = typeof req.query?.src === 'string' ? req.query.src : '';
+  const signedSource = decodeURIComponent(rawSignedSource || '').trim();
+  const sourceFromToken = resolveSignedSourceToken(signedSource);
   const raw = typeof req.query?.url === 'string' ? req.query.url : '';
-  const sourceUrl = decodeURIComponent(raw || '').trim();
+  const sourceUrl = sourceFromToken || decodeURIComponent(raw || '').trim();
 
   if (!/^https?:\/\//i.test(sourceUrl)) {
     res.status(400).json({ error: 'Invalid series URL' });
@@ -100,16 +105,17 @@ export default async function handler(req: any, res: any) {
           const id = String(episode.id);
           const ext = (episode.container_extension || 'mp4').replace(/[^a-z0-9]/gi, '') || 'mp4';
           const directUrl = `${baseUrl}/series/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${encodeURIComponent(id)}.${ext}`;
+          const safeStreamUrl = `/api/stream?src=${encodeURIComponent(createSignedSourceToken(directUrl))}`;
           return {
             id,
             episode_num: episode.episode_num,
             title: episode.title?.trim() || `Episódio ${episode.episode_num || id}`,
             container_extension: ext,
-            url: directUrl,
+            url: safeStreamUrl,
             playback: {
-              directUrl,
-              proxyUrl: `/api/stream?url=${encodeURIComponent(directUrl)}`,
-              preferDirect: true,
+              directUrl: safeStreamUrl,
+              proxyUrl: safeStreamUrl,
+              preferDirect: false,
             },
           };
         });

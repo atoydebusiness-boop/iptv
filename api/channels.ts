@@ -1,3 +1,5 @@
+import { createSignedSourceToken } from "./_secure";
+
 interface Channel {
   name: string;
   url: string;
@@ -27,7 +29,7 @@ const DEFAULT_IPTV_URL =
   "http://ryzeeng.pro:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
 
 const sanitizeUrl = (value: string) => value.replace(/\n/g, "").replace(/\r/g, "").trim();
-const toProxyUrl = (url: string) => `/api/stream?url=${encodeURIComponent(url)}`;
+const toProxyUrl = (url: string) => `/api/stream?src=${encodeURIComponent(createSignedSourceToken(url))}`;
 const SERIES_KEYWORDS = ['series', 'série', 'tv shows', 'season', 'temporada'];
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const MAX_REFRESH_ATTEMPTS = 2;
@@ -98,14 +100,27 @@ function filterByRequestedType(channels: Channel[], requestedType: RequestedType
 }
 
 function withPlayback(channel: Channel): Channel {
-  const directUrl = channel.url;
-  const preferDirect = /^https?:\/\//i.test(directUrl);
+  if (channel.type === 'series' && channel.url.startsWith('/api/series?')) {
+    return {
+      ...channel,
+      playback: {
+        directUrl: channel.url,
+        proxyUrl: channel.url,
+        preferDirect: false,
+      },
+    };
+  }
+
+  const directUrl = channel.url.startsWith('/api/stream?src=')
+    ? channel.url
+    : toProxyUrl(channel.url);
   return {
     ...channel,
+    url: directUrl,
     playback: {
       directUrl,
-      proxyUrl: toProxyUrl(directUrl),
-      preferDirect,
+      proxyUrl: directUrl,
+      preferDirect: false,
     },
   };
 }
@@ -236,11 +251,12 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
   if (seriesItems.status === "fulfilled" && Array.isArray(seriesItems.value)) {
     for (const item of seriesItems.value) {
       if (!item?.series_id) continue;
+      const seriesInfoUrl = `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_series_info&series_id=${encodeURIComponent(String(item.series_id))}`;
       channels.push(withPlayback({
         name: item.name?.trim() || `Série ${item.series_id}`,
         group: item.category_name?.trim() || "Séries",
         type: "series",
-        url: `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_series_info&series_id=${encodeURIComponent(String(item.series_id))}`,
+        url: `/api/series?src=${encodeURIComponent(createSignedSourceToken(seriesInfoUrl))}`,
       }));
     }
   }
