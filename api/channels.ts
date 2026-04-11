@@ -285,15 +285,6 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
 }
 
 async function resolveChannels(sourceUrl: string, requestedType: RequestedType): Promise<Channel[]> {
-  const xtreamCreds = extractXtreamCredentials(sourceUrl);
-  if (xtreamCreds) {
-    try {
-      return await buildChannelsFromXtream(sourceUrl, requestedType);
-    } catch (xtreamError) {
-      console.warn('Xtream direto falhou, tentando M3U.', xtreamError);
-    }
-  }
-
   const candidateUrls = buildCandidateUrls(sourceUrl).slice(0, MAX_CANDIDATE_URLS);
   let lastError = "Falha ao buscar a lista M3U.";
   let lastTriedUrl = "";
@@ -355,9 +346,7 @@ async function resolveChannels(sourceUrl: string, requestedType: RequestedType):
   }
 
   const failureContext = `${lastError}${lastTriedUrl ? ` | Última tentativa: ${lastTriedUrl}` : ""}`;
-  console.warn(`M3U falhou: ${failureContext}. Tentando Xtream API...`);
-
-  return buildChannelsFromXtream(sourceUrl, requestedType);
+  throw new Error(failureContext);
 }
 
 function getCachedChannels(requestedType: RequestedType): CacheEntry | null {
