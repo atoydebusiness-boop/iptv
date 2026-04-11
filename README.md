@@ -1,20 +1,45 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# UltraStream IPTV
 
-# Run and deploy your AI Studio app
+Projeto web (Vite + API serverless) para listar canais e reproduzir streams IPTV via proxy.
 
-This contains everything you need to run your app locally.
+## Segurança (IMPORTANTE)
 
-View your app in AI Studio: https://ai.studio/apps/04dbd2fb-6a6c-49e5-9d53-b35aa1b71fab
+Se você deixar URL M3U com usuário/senha no código, qualquer pessoa pode descobrir.
 
-## Run Locally
+Este projeto agora foi ajustado para usar **somente variáveis de ambiente**:
 
-**Prerequisites:**  Node.js
+- `IPTV_M3U_URL` (obrigatória): URL M3U/HLS da sua lista.
+- `STREAM_ACCESS_TOKEN` (recomendada): token exigido nas rotas `/api/channels`, `/api/stream` e `/api/series`.
+- `VITE_STREAM_ACCESS_TOKEN` (frontend): deve ser igual ao `STREAM_ACCESS_TOKEN`.
+- `STREAM_HOST_ALLOWLIST` (recomendada): hosts permitidos no proxy, separados por vírgula.
+- `CHANNELS_MAX_ITEMS` (opcional): limita itens por tipo para evitar timeout/memória em serverless.
 
+## Configuração
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+1. Instale dependências:
+   ```bash
+   npm install
+   ```
+2. Copie o `.env.example` para `.env.local` (ou variáveis no deploy):
+   ```bash
+   cp .env.example .env.local
+   ```
+3. Preencha as variáveis obrigatórias:
+   - `IPTV_M3U_URL`
+   - `STREAM_ACCESS_TOKEN`
+   - `VITE_STREAM_ACCESS_TOKEN`
+4. Rode localmente:
+   ```bash
+   npm run dev
+   ```
+
+## Observações
+
+- Sem `IPTV_M3U_URL`, a API retorna erro e não usa fallback hardcoded.
+- Com `STREAM_HOST_ALLOWLIST`, a API bloqueia streams fora da lista permitida.
+
+## Troubleshooting rápido (Vercel)
+
+- Se aparecer `401` em `/api/channels` ou `/api/stream`, configure **também** `VITE_STREAM_ACCESS_TOKEN` (igual ao `STREAM_ACCESS_TOKEN`) e faça novo deploy.
+- Se ainda aparecer URL antiga no player, limpe o cache/localStorage do navegador e recarregue.
+- Se aparecer `FUNCTION_INVOCATION_FAILED`, teste `CHANNELS_MAX_ITEMS=600` e redeploy (alguns painéis retornam listas gigantes).

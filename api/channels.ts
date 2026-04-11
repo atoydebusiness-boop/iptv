@@ -1,3 +1,5 @@
+import { enforceAccessToken } from './_security';
+
 interface Channel {
   name: string;
   url: string;
@@ -23,15 +25,16 @@ type CacheEntry = {
   updatedAt: number;
 };
 
-const DEFAULT_IPTV_URL =
-  "http://ryzeeng.pro:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
-
 const sanitizeUrl = (value: string) => value.replace(/\n/g, "").replace(/\r/g, "").trim();
 const toProxyUrl = (url: string) => `/api/stream?url=${encodeURIComponent(url)}`;
 const SERIES_KEYWORDS = ['series', 'série', 'tv shows', 'season', 'temporada'];
 const CACHE_TTL_MS = 5 * 60 * 1000;
-const MAX_REFRESH_ATTEMPTS = 2;
+const MAX_REFRESH_ATTEMPTS = 1;
 const REFRESH_RETRY_DELAY_MS = 700;
+const UPSTREAM_TIMEOUT_MS = 3200;
+const MAX_CANDIDATE_URLS = 3;
+const MAX_ITEMS_PER_TYPE = Math.max(100, Number(process.env.CHANNELS_MAX_ITEMS || 1200));
+const MAX_M3U_RESPONSE_BYTES = 1_200_000;
 
 const channelsCache: Partial<Record<RequestedType, CacheEntry>> = {};
 const inFlightRefresh: Partial<Record<RequestedType, Promise<Channel[]>>> = {};
@@ -144,6 +147,32 @@ const isLikelyNotFoundPage = (content: string) => {
   );
 };
 
+async function readTextLimited(response: Response, maxBytes = MAX_M3U_RESPONSE_BYTES): Promise<string> {
+  if (!response.body) return await response.text();
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let bytesRead = 0;
+  let text = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+
+    bytesRead += value.byteLength;
+    if (bytesRead > maxBytes) {
+      await reader.cancel();
+      throw new Error(`Resposta acima do limite (${maxBytes} bytes).`);
+    }
+
+    text += decoder.decode(value, { stream: true });
+  }
+
+  text += decoder.decode();
+  return text;
+}
+
 function extractXtreamCredentials(rawUrl: string): XtreamCredentials | null {
   try {
     const parsed = new URL(rawUrl.startsWith("http") ? rawUrl : `http://${rawUrl}`);
@@ -157,7 +186,7 @@ function extractXtreamCredentials(rawUrl: string): XtreamCredentials | null {
   }
 }
 
-async function fetchXtreamJson<T>(url: string, timeoutMs = 7000): Promise<T> {
+async function fetchXtreamJson<T>(url: string, timeoutMs = UPSTREAM_TIMEOUT_MS): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -208,7 +237,7 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
   const channels: Channel[] = [];
 
   if (liveItems.status === "fulfilled" && Array.isArray(liveItems.value)) {
-    for (const item of liveItems.value) {
+    for (const item of liveItems.value.slice(0, MAX_ITEMS_PER_TYPE)) {
       if (!item.stream_id) continue;
       channels.push(withPlayback({
         name: item.name?.trim() || `Live ${item.stream_id}`,
@@ -220,7 +249,7 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
   }
 
   if (vodItems.status === "fulfilled" && Array.isArray(vodItems.value)) {
-    for (const item of vodItems.value) {
+    for (const item of vodItems.value.slice(0, MAX_ITEMS_PER_TYPE)) {
       if (!item.stream_id) continue;
       const ext = (item.container_extension || "mp4").replace(/[^a-z0-9]/gi, "") || "mp4";
       channels.push(withPlayback({
@@ -234,7 +263,7 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
 
 
   if (seriesItems.status === "fulfilled" && Array.isArray(seriesItems.value)) {
-    for (const item of seriesItems.value) {
+    for (const item of seriesItems.value.slice(0, MAX_ITEMS_PER_TYPE)) {
       if (!item?.series_id) continue;
       channels.push(withPlayback({
         name: item.name?.trim() || `Série ${item.series_id}`,
@@ -256,14 +285,14 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
 }
 
 async function resolveChannels(sourceUrl: string, requestedType: RequestedType): Promise<Channel[]> {
-  const candidateUrls = buildCandidateUrls(sourceUrl);
+  const candidateUrls = buildCandidateUrls(sourceUrl).slice(0, MAX_CANDIDATE_URLS);
   let lastError = "Falha ao buscar a lista M3U.";
   let lastTriedUrl = "";
 
   for (const url of candidateUrls) {
     lastTriedUrl = url;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 7000);
+    const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
 
     try {
       const response = await fetch(url, {
@@ -276,12 +305,21 @@ async function resolveChannels(sourceUrl: string, requestedType: RequestedType):
         },
       });
 
-      const responseText = await response.text();
-
       if (!response.ok) {
         lastError = `IPTV Server returned ${response.status} para ${url}`;
         continue;
       }
+
+      const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+      const contentLength = Number(response.headers.get('content-length') || 0);
+      const isLikelyBinary = contentType.includes('video') || contentType.includes('application/octet-stream');
+      if (isLikelyBinary || (contentLength > 0 && contentLength > MAX_M3U_RESPONSE_BYTES)) {
+        lastError = `Resposta de ${url} parece binária/grande demais para parser de M3U.`;
+        continue;
+      }
+
+      const responseText = await readTextLimited(response);
+
       if (isLikelyNotFoundPage(responseText)) {
         lastError = `Servidor respondeu NOT_FOUND para ${url}`;
         continue;
@@ -308,9 +346,7 @@ async function resolveChannels(sourceUrl: string, requestedType: RequestedType):
   }
 
   const failureContext = `${lastError}${lastTriedUrl ? ` | Última tentativa: ${lastTriedUrl}` : ""}`;
-  console.warn(`M3U falhou: ${failureContext}. Tentando Xtream API...`);
-
-  return buildChannelsFromXtream(sourceUrl, requestedType);
+  throw new Error(failureContext);
 }
 
 function getCachedChannels(requestedType: RequestedType): CacheEntry | null {
@@ -397,13 +433,18 @@ export default async function handler(req: any, res: any) {
     res.status(405).json({ error: "Method Not Allowed" });
     return;
   }
+  if (!enforceAccessToken(req, res)) return;
 
   try {
-    const requestedType = (["all", "live", "movie", "series"].includes(String(req.query?.type || "all"))
-      ? String(req.query?.type || "all")
-      : "all") as RequestedType;
+    const requestedType = (["all", "live", "movie", "series"].includes(String(req.query?.type || "live"))
+      ? String(req.query?.type || "live")
+      : "live") as RequestedType;
 
-    const sourceUrl = sanitizeUrl(process.env.IPTV_M3U_URL || DEFAULT_IPTV_URL);
+    const sourceUrl = sanitizeUrl(process.env.IPTV_M3U_URL || '');
+    if (!sourceUrl) {
+      res.status(500).json({ error: "IPTV_M3U_URL não configurada no ambiente." });
+      return;
+    }
     const cached = getCachedChannels(requestedType);
 
     if (cached?.data?.length) {

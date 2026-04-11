@@ -1,3 +1,5 @@
+import { enforceAccessToken, isUrlHostAllowed } from './_security';
+
 interface RawEpisode {
   id?: string | number;
   episode_num?: number;
@@ -40,12 +42,17 @@ export default async function handler(req: any, res: any) {
     res.status(405).json({ error: 'Method Not Allowed' });
     return;
   }
+  if (!enforceAccessToken(req, res)) return;
 
   const raw = typeof req.query?.url === 'string' ? req.query.url : '';
   const sourceUrl = decodeURIComponent(raw || '').trim();
 
   if (!/^https?:\/\//i.test(sourceUrl)) {
     res.status(400).json({ error: 'Invalid series URL' });
+    return;
+  }
+  if (!isUrlHostAllowed(sourceUrl)) {
+    res.status(403).json({ error: 'Host não permitido pelo STREAM_HOST_ALLOWLIST' });
     return;
   }
 

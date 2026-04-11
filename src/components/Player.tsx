@@ -36,7 +36,7 @@ interface SeriesDetails {
 
 type ContentTab = 'all' | 'live' | 'movie' | 'series';
 
-const CHANNEL_CACHE_KEY = 'iptv_channels_cache_v2';
+const CHANNEL_CACHE_KEY = 'iptv_channels_cache_v3';
 const VISIBLE_PAGE_SIZE = 300;
 const VOD_BROWSER_EXTENSIONS = new Set(['mp4', 'webm', 'ogg', 'm4v', 'mov']);
 const STREAM_ACCESS_TOKEN = (import.meta.env.VITE_STREAM_ACCESS_TOKEN || '').trim();
@@ -151,11 +151,11 @@ export default function Player() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
-  const [activeTab, setActiveTab] = useState<ContentTab>('all');
+  const [activeTab, setActiveTab] = useState<ContentTab>('live');
   const [visibleCount, setVisibleCount] = useState(VISIBLE_PAGE_SIZE);
   const [playbackCandidateIndex, setPlaybackCandidateIndex] = useState(0);
   const [useProxyFallback, setUseProxyFallback] = useState(false);
-  const [loadedTypes, setLoadedTypes] = useState<Set<ContentTab>>(new Set(['all']));
+  const [loadedTypes, setLoadedTypes] = useState<Set<ContentTab>>(new Set(['live']));
   const [vodPlaybackFailed, setVodPlaybackFailed] = useState(false);
   const [showPremiumModal, setShowPremiumModal] = useState(false);
   const [seriesCache, setSeriesCache] = useState<Record<string, SeriesDetails>>({});
@@ -191,7 +191,10 @@ export default function Player() {
     setSeriesLoading(true);
     setSeriesError('');
     try {
-      const response = await fetch(`${seriesApiUrl}?url=${encodeURIComponent(seriesChannel.url)}`, { cache: 'no-store' });
+      const seriesUrl = STREAM_ACCESS_TOKEN
+        ? `${seriesApiUrl}?url=${encodeURIComponent(seriesChannel.url)}&token=${encodeURIComponent(STREAM_ACCESS_TOKEN)}`
+        : `${seriesApiUrl}?url=${encodeURIComponent(seriesChannel.url)}`;
+      const response = await fetch(seriesUrl, { cache: 'no-store' });
       if (!response.ok) {
         const raw = await response.text();
         throw new Error(raw || 'Falha ao carregar episódios da série.');
@@ -229,7 +232,7 @@ export default function Player() {
       console.warn('Não foi possível ler cache da lista.', err);
     }
 
-    loadChannels();
+    loadChannels('live');
   }, []);
 
   const loadChannels = async (requestedType: ContentTab = "all") => {
@@ -270,6 +273,12 @@ export default function Player() {
       }
 
       if (!response.ok) {
+        if (response.status === 401) {
+          localStorage.removeItem(CHANNEL_CACHE_KEY);
+          lastValidChannelsRef.current = [];
+          setChannels([]);
+          throw new Error('Acesso negado (401). Configure VITE_STREAM_ACCESS_TOKEN com o mesmo valor de STREAM_ACCESS_TOKEN no deploy.');
+        }
         const errorRaw = await response.text();
         let errorMessage = 'Falha ao carregar lista do servidor.';
         try {
