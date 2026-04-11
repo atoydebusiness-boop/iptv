@@ -1,4 +1,4 @@
-import crypto from 'crypto';
+import { createHmac, timingSafeEqual } from 'crypto';
 
 const DEFAULT_TTL_SECONDS = 60 * 30;
 
@@ -17,7 +17,7 @@ const getSigningSecret = () => {
 };
 
 const sign = (payload: string) =>
-  crypto.createHmac('sha256', getSigningSecret()).update(payload).digest('base64url');
+  createHmac('sha256', getSigningSecret()).update(payload).digest('base64url');
 
 export const createSignedSourceToken = (sourceUrl: string, ttlSeconds = DEFAULT_TTL_SECONDS) => {
   const payload: SignedPayload = {
@@ -39,7 +39,7 @@ export const resolveSignedSourceToken = (token: string): string | null => {
   const providedBuffer = Buffer.from(providedSignature || '', 'utf8');
   const expectedBuffer = Buffer.from(expectedSignature, 'utf8');
   if (providedBuffer.length !== expectedBuffer.length) return null;
-  if (!crypto.timingSafeEqual(providedBuffer, expectedBuffer)) return null;
+  if (!timingSafeEqual(providedBuffer, expectedBuffer)) return null;
 
   const parsed = JSON.parse(fromBase64Url(encodedPayload)) as SignedPayload;
   const now = Math.floor(Date.now() / 1000);
