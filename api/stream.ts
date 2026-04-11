@@ -1,3 +1,5 @@
+import { enforceAccessToken, isUrlHostAllowed } from './_security';
+
 const STREAM_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
@@ -140,12 +142,17 @@ export default async function handler(req: any, res: any) {
     res.status(200).end();
     return;
   }
+  if (!enforceAccessToken(req, res)) return;
 
   const raw = typeof req.query?.url === 'string' ? req.query.url : '';
   const sourceUrl = decodeURIComponent(raw || '').trim();
 
   if (!isAbsoluteHttp(sourceUrl)) {
     res.status(400).json({ error: 'Invalid stream URL' });
+    return;
+  }
+  if (!isUrlHostAllowed(sourceUrl)) {
+    res.status(403).json({ error: 'Host não permitido pelo STREAM_HOST_ALLOWLIST' });
     return;
   }
 

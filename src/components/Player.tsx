@@ -191,7 +191,10 @@ export default function Player() {
     setSeriesLoading(true);
     setSeriesError('');
     try {
-      const response = await fetch(`${seriesApiUrl}?url=${encodeURIComponent(seriesChannel.url)}`, { cache: 'no-store' });
+      const seriesUrl = STREAM_ACCESS_TOKEN
+        ? `${seriesApiUrl}?url=${encodeURIComponent(seriesChannel.url)}&token=${encodeURIComponent(STREAM_ACCESS_TOKEN)}`
+        : `${seriesApiUrl}?url=${encodeURIComponent(seriesChannel.url)}`;
+      const response = await fetch(seriesUrl, { cache: 'no-store' });
       if (!response.ok) {
         const raw = await response.text();
         throw new Error(raw || 'Falha ao carregar episódios da série.');

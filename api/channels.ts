@@ -1,3 +1,5 @@
+import { enforceAccessToken } from './_security';
+
 interface Channel {
   name: string;
   url: string;
@@ -22,9 +24,6 @@ type CacheEntry = {
   data: Channel[];
   updatedAt: number;
 };
-
-const DEFAULT_IPTV_URL =
-  "http://ryzeeng.pro:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
 
 const sanitizeUrl = (value: string) => value.replace(/\n/g, "").replace(/\r/g, "").trim();
 const toProxyUrl = (url: string) => `/api/stream?url=${encodeURIComponent(url)}`;
@@ -397,13 +396,18 @@ export default async function handler(req: any, res: any) {
     res.status(405).json({ error: "Method Not Allowed" });
     return;
   }
+  if (!enforceAccessToken(req, res)) return;
 
   try {
     const requestedType = (["all", "live", "movie", "series"].includes(String(req.query?.type || "all"))
       ? String(req.query?.type || "all")
       : "all") as RequestedType;
 
-    const sourceUrl = sanitizeUrl(process.env.IPTV_M3U_URL || DEFAULT_IPTV_URL);
+    const sourceUrl = sanitizeUrl(process.env.IPTV_M3U_URL || '');
+    if (!sourceUrl) {
+      res.status(500).json({ error: "IPTV_M3U_URL não configurada no ambiente." });
+      return;
+    }
     const cached = getCachedChannels(requestedType);
 
     if (cached?.data?.length) {
