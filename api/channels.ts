@@ -29,8 +29,10 @@ const sanitizeUrl = (value: string) => value.replace(/\n/g, "").replace(/\r/g, "
 const toProxyUrl = (url: string) => `/api/stream?url=${encodeURIComponent(url)}`;
 const SERIES_KEYWORDS = ['series', 'série', 'tv shows', 'season', 'temporada'];
 const CACHE_TTL_MS = 5 * 60 * 1000;
-const MAX_REFRESH_ATTEMPTS = 2;
+const MAX_REFRESH_ATTEMPTS = 1;
 const REFRESH_RETRY_DELAY_MS = 700;
+const UPSTREAM_TIMEOUT_MS = 3200;
+const MAX_CANDIDATE_URLS = 3;
 
 const channelsCache: Partial<Record<RequestedType, CacheEntry>> = {};
 const inFlightRefresh: Partial<Record<RequestedType, Promise<Channel[]>>> = {};
@@ -156,7 +158,7 @@ function extractXtreamCredentials(rawUrl: string): XtreamCredentials | null {
   }
 }
 
-async function fetchXtreamJson<T>(url: string, timeoutMs = 7000): Promise<T> {
+async function fetchXtreamJson<T>(url: string, timeoutMs = UPSTREAM_TIMEOUT_MS): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -255,14 +257,14 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
 }
 
 async function resolveChannels(sourceUrl: string, requestedType: RequestedType): Promise<Channel[]> {
-  const candidateUrls = buildCandidateUrls(sourceUrl);
+  const candidateUrls = buildCandidateUrls(sourceUrl).slice(0, MAX_CANDIDATE_URLS);
   let lastError = "Falha ao buscar a lista M3U.";
   let lastTriedUrl = "";
 
   for (const url of candidateUrls) {
     lastTriedUrl = url;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 7000);
+    const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
 
     try {
       const response = await fetch(url, {
