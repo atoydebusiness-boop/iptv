@@ -1,4 +1,5 @@
 import { enforceAccessToken, isUrlHostAllowed } from './_security';
+import { Readable } from 'stream';
 
 const STREAM_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
@@ -6,6 +7,7 @@ const STREAM_UA =
 const isAbsoluteHttp = (value: string) => /^https?:\/\//i.test(value);
 const proxify = (url: string) => `/api/stream?url=${encodeURIComponent(url)}`;
 const STREAM_EXTENSIONS = ['m3u8', 'mp4', 'ts', 'mkv'];
+const UPSTREAM_TIMEOUT_MS = 6000;
 type SeriesInfoEpisode = { id?: string | number; container_extension?: string };
 type SeriesInfoPayload = { episodes?: Record<string, SeriesInfoEpisode[] | undefined> | SeriesInfoEpisode[] };
 
@@ -165,7 +167,7 @@ export default async function handler(req: any, res: any) {
 
     for (const candidateUrl of candidateUrls) {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 12000);
+      const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
       try {
         const attempt = await fetch(candidateUrl, {
           signal: controller.signal,
@@ -212,14 +214,27 @@ export default async function handler(req: any, res: any) {
       mode: 'proxy_binary',
       source: finalSourceUrl,
     });
-    const buffer = Buffer.from(await upstream.arrayBuffer());
     res.status(upstream.status);
     const passthroughHeaders = ['content-type', 'accept-ranges', 'content-range', 'content-length'];
     for (const key of passthroughHeaders) {
       const value = upstream.headers.get(key);
       if (value) res.setHeader(key, value);
     }
-    res.send(buffer);
+
+    if (!upstream.body) {
+      throw new Error('Upstream sem corpo para proxy binário.');
+    }
+
+    const stream = Readable.fromWeb(upstream.body as any);
+    stream.on('error', (err) => {
+      console.error('[stream-proxy] pipe_error', err);
+      if (!res.headersSent) {
+        res.status(502).json({ error: 'Stream proxy failed', details: 'Pipe error' });
+      } else {
+        res.end();
+      }
+    });
+    stream.pipe(res);
   } catch (error: any) {
     res.status(502).json({ error: 'Stream proxy failed', details: error?.message || 'Unknown error' });
   }
