@@ -36,6 +36,7 @@ const MAX_REFRESH_ATTEMPTS = 1;
 const REFRESH_RETRY_DELAY_MS = 250;
 const MAX_CANDIDATE_URLS = 2;
 const M3U_FETCH_TIMEOUT_MS = 3500;
+const ENABLE_XTREAM_FALLBACK = (process.env.ENABLE_XTREAM_FALLBACK || 'false').toLowerCase() === 'true';
 
 const channelsCache: Partial<Record<RequestedType, CacheEntry>> = {};
 const inFlightRefresh: Partial<Record<RequestedType, Promise<Channel[]>>> = {};
@@ -326,8 +327,12 @@ async function resolveChannels(sourceUrl: string, requestedType: RequestedType):
   }
 
   const failureContext = `${lastError}${lastTriedUrl ? ` | Última tentativa: ${lastTriedUrl}` : ""}`;
-  console.warn(`M3U falhou: ${failureContext}. Tentando Xtream API...`);
 
+  if (!ENABLE_XTREAM_FALLBACK || requestedType !== 'all') {
+    throw new Error(`M3U falhou sem fallback Xtream (${requestedType}): ${failureContext}`);
+  }
+
+  console.warn(`M3U falhou: ${failureContext}. Tentando Xtream API...`);
   return buildChannelsFromXtream(sourceUrl, requestedType);
 }
 
