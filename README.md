@@ -12,6 +12,7 @@ Este projeto agora foi ajustado para usar **somente variáveis de ambiente**:
 - `STREAM_ACCESS_TOKEN` (recomendada): token exigido nas rotas `/api/channels`, `/api/stream` e `/api/series`.
 - `VITE_STREAM_ACCESS_TOKEN` (frontend): deve ser igual ao `STREAM_ACCESS_TOKEN`.
 - `STREAM_HOST_ALLOWLIST` (recomendada): hosts permitidos no proxy, separados por vírgula.
+- `CHANNELS_MAX_ITEMS` (opcional): limita itens por tipo para evitar timeout/memória em serverless.
 
 ## Configuração
 
@@ -41,3 +42,4 @@ Este projeto agora foi ajustado para usar **somente variáveis de ambiente**:
 
 - Se aparecer `401` em `/api/channels` ou `/api/stream`, configure **também** `VITE_STREAM_ACCESS_TOKEN` (igual ao `STREAM_ACCESS_TOKEN`) e faça novo deploy.
 - Se ainda aparecer URL antiga no player, limpe o cache/localStorage do navegador e recarregue.
+- Se aparecer `FUNCTION_INVOCATION_FAILED`, teste `CHANNELS_MAX_ITEMS=600` e redeploy (alguns painéis retornam listas gigantes).

@@ -33,6 +33,7 @@ const MAX_REFRESH_ATTEMPTS = 1;
 const REFRESH_RETRY_DELAY_MS = 700;
 const UPSTREAM_TIMEOUT_MS = 3200;
 const MAX_CANDIDATE_URLS = 3;
+const MAX_ITEMS_PER_TYPE = Math.max(100, Number(process.env.CHANNELS_MAX_ITEMS || 1200));
 
 const channelsCache: Partial<Record<RequestedType, CacheEntry>> = {};
 const inFlightRefresh: Partial<Record<RequestedType, Promise<Channel[]>>> = {};
@@ -209,7 +210,7 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
   const channels: Channel[] = [];
 
   if (liveItems.status === "fulfilled" && Array.isArray(liveItems.value)) {
-    for (const item of liveItems.value) {
+    for (const item of liveItems.value.slice(0, MAX_ITEMS_PER_TYPE)) {
       if (!item.stream_id) continue;
       channels.push(withPlayback({
         name: item.name?.trim() || `Live ${item.stream_id}`,
@@ -221,7 +222,7 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
   }
 
   if (vodItems.status === "fulfilled" && Array.isArray(vodItems.value)) {
-    for (const item of vodItems.value) {
+    for (const item of vodItems.value.slice(0, MAX_ITEMS_PER_TYPE)) {
       if (!item.stream_id) continue;
       const ext = (item.container_extension || "mp4").replace(/[^a-z0-9]/gi, "") || "mp4";
       channels.push(withPlayback({
@@ -235,7 +236,7 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
 
 
   if (seriesItems.status === "fulfilled" && Array.isArray(seriesItems.value)) {
-    for (const item of seriesItems.value) {
+    for (const item of seriesItems.value.slice(0, MAX_ITEMS_PER_TYPE)) {
       if (!item?.series_id) continue;
       channels.push(withPlayback({
         name: item.name?.trim() || `Série ${item.series_id}`,
@@ -410,9 +411,9 @@ export default async function handler(req: any, res: any) {
   if (!enforceAccessToken(req, res)) return;
 
   try {
-    const requestedType = (["all", "live", "movie", "series"].includes(String(req.query?.type || "all"))
-      ? String(req.query?.type || "all")
-      : "all") as RequestedType;
+    const requestedType = (["all", "live", "movie", "series"].includes(String(req.query?.type || "live"))
+      ? String(req.query?.type || "live")
+      : "live") as RequestedType;
 
     const sourceUrl = sanitizeUrl(process.env.IPTV_M3U_URL || '');
     if (!sourceUrl) {
