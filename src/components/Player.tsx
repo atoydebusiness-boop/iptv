@@ -151,11 +151,11 @@ export default function Player() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
-  const [activeTab, setActiveTab] = useState<ContentTab>('all');
+  const [activeTab, setActiveTab] = useState<ContentTab>('live');
   const [visibleCount, setVisibleCount] = useState(VISIBLE_PAGE_SIZE);
   const [playbackCandidateIndex, setPlaybackCandidateIndex] = useState(0);
   const [useProxyFallback, setUseProxyFallback] = useState(false);
-  const [loadedTypes, setLoadedTypes] = useState<Set<ContentTab>>(new Set(['all']));
+  const [loadedTypes, setLoadedTypes] = useState<Set<ContentTab>>(new Set(['live']));
   const [vodPlaybackFailed, setVodPlaybackFailed] = useState(false);
   const [showPremiumModal, setShowPremiumModal] = useState(false);
   const [seriesCache, setSeriesCache] = useState<Record<string, SeriesDetails>>({});
@@ -232,7 +232,7 @@ export default function Player() {
       console.warn('Não foi possível ler cache da lista.', err);
     }
 
-    loadChannels();
+    loadChannels('live');
   }, []);
 
   const loadChannels = async (requestedType: ContentTab = "all") => {
