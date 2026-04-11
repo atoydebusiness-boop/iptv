@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'crypto';
+import { createHash, createHmac, timingSafeEqual } from 'crypto';
 
 const DEFAULT_TTL_SECONDS = 60 * 30;
 
@@ -23,11 +23,25 @@ const fromBase64Url = (value: string) => {
 const getSigningSecret = () => {
   const configured = (process.env.STREAM_ACCESS_TOKEN || '').trim();
   if (configured) return configured;
-  throw new Error('STREAM_ACCESS_TOKEN is required to sign stream sources.');
+
+  const fallbackSeed = [
+    process.env.IPTV_M3U_URL || '',
+    process.env.STREAM_HOST_ALLOWLIST || '',
+    process.env.VERCEL_PROJECT_PRODUCTION_URL || '',
+    process.env.VERCEL_URL || '',
+    'ultrastream-server-fallback-v1',
+  ].join('|');
+
+  return createHash('sha256').update(fallbackSeed).digest('hex');
 };
 
 const sign = (payload: string) =>
-  createHmac('sha256', getSigningSecret()).update(payload).digest('base64url');
+  createHmac('sha256', getSigningSecret())
+    .update(payload)
+    .digest('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
 
 export const createSignedSourceToken = (sourceUrl: string, ttlSeconds = DEFAULT_TTL_SECONDS) => {
   const payload: SignedPayload = {
