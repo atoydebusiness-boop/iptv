@@ -34,6 +34,7 @@ const REFRESH_RETRY_DELAY_MS = 700;
 const UPSTREAM_TIMEOUT_MS = 3200;
 const MAX_CANDIDATE_URLS = 3;
 const MAX_ITEMS_PER_TYPE = Math.max(100, Number(process.env.CHANNELS_MAX_ITEMS || 1200));
+const MAX_M3U_RESPONSE_BYTES = 1_200_000;
 
 const channelsCache: Partial<Record<RequestedType, CacheEntry>> = {};
 const inFlightRefresh: Partial<Record<RequestedType, Promise<Channel[]>>> = {};
@@ -145,6 +146,32 @@ const isLikelyNotFoundPage = (content: string) => {
     normalized.includes("gru1::")
   );
 };
+
+async function readTextLimited(response: Response, maxBytes = MAX_M3U_RESPONSE_BYTES): Promise<string> {
+  if (!response.body) return await response.text();
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let bytesRead = 0;
+  let text = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+
+    bytesRead += value.byteLength;
+    if (bytesRead > maxBytes) {
+      await reader.cancel();
+      throw new Error(`Resposta acima do limite (${maxBytes} bytes).`);
+    }
+
+    text += decoder.decode(value, { stream: true });
+  }
+
+  text += decoder.decode();
+  return text;
+}
 
 function extractXtreamCredentials(rawUrl: string): XtreamCredentials | null {
   try {
@@ -287,12 +314,21 @@ async function resolveChannels(sourceUrl: string, requestedType: RequestedType):
         },
       });
 
-      const responseText = await response.text();
-
       if (!response.ok) {
         lastError = `IPTV Server returned ${response.status} para ${url}`;
         continue;
       }
+
+      const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+      const contentLength = Number(response.headers.get('content-length') || 0);
+      const isLikelyBinary = contentType.includes('video') || contentType.includes('application/octet-stream');
+      if (isLikelyBinary || (contentLength > 0 && contentLength > MAX_M3U_RESPONSE_BYTES)) {
+        lastError = `Resposta de ${url} parece binária/grande demais para parser de M3U.`;
+        continue;
+      }
+
+      const responseText = await readTextLimited(response);
+
       if (isLikelyNotFoundPage(responseText)) {
         lastError = `Servidor respondeu NOT_FOUND para ${url}`;
         continue;
