@@ -1,8 +1,10 @@
+import { createSignedSourceToken, resolveSignedSourceToken } from './_secure';
+
 const STREAM_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 const isAbsoluteHttp = (value: string) => /^https?:\/\//i.test(value);
-const proxify = (url: string) => `/api/stream?url=${encodeURIComponent(url)}`;
+const proxify = (url: string) => `/api/stream?src=${encodeURIComponent(createSignedSourceToken(url))}`;
 const STREAM_EXTENSIONS = ['m3u8', 'mp4', 'ts', 'mkv'];
 type SeriesInfoEpisode = { id?: string | number; container_extension?: string };
 type SeriesInfoPayload = { episodes?: Record<string, SeriesInfoEpisode[] | undefined> | SeriesInfoEpisode[] };
@@ -141,8 +143,11 @@ export default async function handler(req: any, res: any) {
     return;
   }
 
+  const rawSignedSource = typeof req.query?.src === 'string' ? req.query.src : '';
+  const signedSource = decodeURIComponent(rawSignedSource || '').trim();
+  const sourceFromToken = resolveSignedSourceToken(signedSource);
   const raw = typeof req.query?.url === 'string' ? req.query.url : '';
-  const sourceUrl = decodeURIComponent(raw || '').trim();
+  const sourceUrl = sourceFromToken || decodeURIComponent(raw || '').trim();
 
   if (!isAbsoluteHttp(sourceUrl)) {
     res.status(400).json({ error: 'Invalid stream URL' });

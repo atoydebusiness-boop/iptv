@@ -39,8 +39,6 @@ type ContentTab = 'all' | 'live' | 'movie' | 'series';
 const CHANNEL_CACHE_KEY = 'iptv_channels_cache_v2';
 const VISIBLE_PAGE_SIZE = 300;
 const VOD_BROWSER_EXTENSIONS = new Set(['mp4', 'webm', 'ogg', 'm4v', 'mov']);
-const STREAM_ACCESS_TOKEN = (import.meta.env.VITE_STREAM_ACCESS_TOKEN || '').trim();
-
 const normalize = (text?: string) => (text || '').toLowerCase();
 
 const inferTypeFromText = (channel: Channel): Channel['type'] => {
@@ -65,13 +63,9 @@ const normalizeChannels = (items: Channel[]): Channel[] =>
   items.map((item) => ({ ...item, type: inferTypeFromText(item) }));
 
 const toProxyUrl = (url: string) => {
-  const appendToken = (baseUrl: string) =>
-    STREAM_ACCESS_TOKEN
-      ? `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(STREAM_ACCESS_TOKEN)}`
-      : baseUrl;
-
-  if (url.startsWith('/api/stream?url=')) return appendToken(url);
-  return appendToken(`/api/stream?url=${encodeURIComponent(url)}`);
+  if (url.startsWith('/api/stream?src=')) return url;
+  if (url.startsWith('/api/stream?url=')) return url;
+  return `/api/stream?url=${encodeURIComponent(url)}`;
 };
 
 const extractExtension = (url: string) => {
@@ -91,15 +85,6 @@ const isBrowserCompatibleVodUrl = (url: string) => {
   if (VOD_BROWSER_EXTENSIONS.has(ext)) return true;
   if (ext === 'm3u8') return canPlayHlsNatively();
   return false;
-};
-
-const extractSeriesId = (url: string) => {
-  try {
-    const parsed = new URL(url);
-    return parsed.searchParams.get('series_id')?.trim() || '';
-  } catch {
-    return '';
-  }
 };
 
 const buildPlayableCandidates = (url: string) => {
@@ -145,7 +130,7 @@ const buildPlayableCandidates = (url: string) => {
 };
 
 export default function Player() {
-  const WHATSAPP_SUBSCRIBE_URL = 'https://wa.me/5561993099265?text=Olá%2C%20venho%20do%20site%20UltraStreamTV%20e%20quero%20assinar';
+  const WHATSAPP_SUBSCRIBE_URL = 'https://wa.me/5561992011324?text=Olá%2C%20venho%20do%20site%20UltraStreamTV%20e%20quero%20assinar';
   const [channels, setChannels] = useState<Channel[]>([]);
   const [currentChannel, setCurrentChannel] = useState<Channel | null>(null);
   const [loading, setLoading] = useState(false);
@@ -172,12 +157,7 @@ export default function Player() {
   const hlsRef = useRef<Hls | null>(null);
 
   const loadSeriesDetails = async (seriesChannel: Channel) => {
-    const seriesId = extractSeriesId(seriesChannel.url);
-    console.info('[DIAG] Série selecionada', { seriesId, url: seriesChannel.url });
-    if (!seriesId) {
-      setSeriesError('Não foi possível identificar series_id desta série.');
-      return;
-    }
+    console.info('[DIAG] Série selecionada', { url: seriesChannel.url });
 
     if (seriesCache[seriesChannel.url]) {
       const cached = seriesCache[seriesChannel.url];
@@ -191,7 +171,7 @@ export default function Player() {
     setSeriesLoading(true);
     setSeriesError('');
     try {
-      const response = await fetch(`${seriesApiUrl}?url=${encodeURIComponent(seriesChannel.url)}`, { cache: 'no-store' });
+      const response = await fetch(seriesChannel.url.startsWith('/api/series?') ? seriesChannel.url : `${seriesApiUrl}?url=${encodeURIComponent(seriesChannel.url)}`, { cache: 'no-store' });
       if (!response.ok) {
         const raw = await response.text();
         throw new Error(raw || 'Falha ao carregar episódios da série.');
@@ -241,9 +221,7 @@ export default function Player() {
     setError('');
     setListNotice('');
     try {
-      const targetUrl = STREAM_ACCESS_TOKEN
-        ? `${apiUrl}?type=${requestedType}&token=${encodeURIComponent(STREAM_ACCESS_TOKEN)}`
-        : `${apiUrl}?type=${requestedType}`;
+      const targetUrl = `${apiUrl}?type=${requestedType}`;
       let response: Response | null = null;
       let lastFetchError: any = null;
 

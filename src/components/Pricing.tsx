@@ -26,7 +26,7 @@ const plans = [
 ];
 
 export default function Pricing() {
-  const whatsappUrl = 'https://wa.me/5561993099265?text=Olá! Quero assinar agora, me passa os dados para pagamento.';
+  const whatsappUrl = 'https://wa.me/5561992011324?text=Olá! Quero assinar agora, me passa os dados para pagamento.';
 
   return (
     <section id="pricing" className="py-20">
@@ -66,7 +66,7 @@ export default function Pricing() {
                 ))}
               </ul>
               <a 
-                href={`https://wa.me/5561993099265?text=Olá! Quero assinar o plano ${plan.name}`}
+                href={`https://wa.me/5561992011324?text=Olá! Quero assinar o plano ${plan.name}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className={`w-full block text-center py-4 rounded-xl font-bold transition-all ${
@@ -97,7 +97,7 @@ export default function Pricing() {
                   className="w-full inline-flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-2xl transition-all"
                 >
                   <MessageCircle className="w-5 h-5" />
-                  Pedir no WhatsApp (61) 99309-9265
+                  Pedir no WhatsApp (61) 99201-1324
                 </a>
                 
                 <div className="flex items-center gap-4 text-sm text-gray-400">
@@ -160,7 +160,7 @@ export default function Pricing() {
           <div className="text-center">
             <p className="text-xl md:text-2xl font-bold mb-4">Quero Assinar Agora</p>
             <a
-              href="https://wa.me/5561993099265?text=Olá%2C%20venho%20do%20site%20UltraStreamTV%20e%20quero%20assinar"
+              href="https://wa.me/5561992011324?text=Olá%2C%20venho%20do%20site%20UltraStreamTV%20e%20quero%20assinar"
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white font-bold text-lg py-4 px-8 rounded-2xl transition-all"
