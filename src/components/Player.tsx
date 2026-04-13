@@ -130,7 +130,7 @@ const buildPlayableCandidates = (url: string) => {
 };
 
 export default function Player() {
-  const WHATSAPP_SUBSCRIBE_URL = 'https://wa.me/5561993099265?text=Olá%2C%20venho%20do%20site%20UltraStreamTV%20e%20quero%20assinar';
+  const WHATSAPP_SUBSCRIBE_URL = 'https://wa.me/5561992011324?text=Olá%2C%20venho%20do%20site%20UltraStreamTV%20e%20quero%20assinar';
   const [channels, setChannels] = useState<Channel[]>([]);
   const [currentChannel, setCurrentChannel] = useState<Channel | null>(null);
   const [loading, setLoading] = useState(false);
