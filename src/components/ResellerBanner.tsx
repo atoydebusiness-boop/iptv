@@ -23,7 +23,7 @@ export default function ResellerBanner() {
 
             <div className="w-full lg:w-auto flex flex-col sm:flex-row lg:flex-col gap-3 lg:min-w-[260px]">
               <a
-                href="https://wa.me/5561993099265?text=Olá%2C%20venho%20do%20site%20UltraStreamTV%20e%20quero%20ser%20revendedor"
+                href="https://wa.me/5561992011324?text=Olá%2C%20venho%20do%20site%20UltraStreamTV%20e%20quero%20ser%20revendedor"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="w-full text-center bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-5 rounded-xl transition-colors"

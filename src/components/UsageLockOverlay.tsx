@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { trackEvent } from '../lib/analytics';
 
-const WHATSAPP_URL = 'https://wa.me/5561993099265?text=Olá%2C%20venho%20do%20site%20UltraStreamTV%20e%20quero%20assinar';
+const WHATSAPP_URL = 'https://wa.me/5561992011324?text=Olá%2C%20venho%20do%20site%20UltraStreamTV%20e%20quero%20assinar';
 const SESSION_ID_KEY = 'ultrastream_session_id';
 const LOCK_PREFIX = 'ultrastream_lock_active_';
 
