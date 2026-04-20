@@ -11,7 +11,7 @@ interface Channel {
 
 type ContentTab = 'all' | 'live' | 'movie' | 'series';
 
-const CHANNEL_CACHE_KEY = 'iptv_channels_cache_v2';
+const CHANNEL_CACHE_KEY = 'iptv_channels_cache_v3';
 const VISIBLE_PAGE_SIZE = 300;
 
 const normalize = (text?: string) => (text || '').toLowerCase();
@@ -93,7 +93,6 @@ export default function Player() {
   const [activeTab, setActiveTab] = useState<ContentTab>('all');
   const [visibleCount, setVisibleCount] = useState(VISIBLE_PAGE_SIZE);
   const [playbackCandidateIndex, setPlaybackCandidateIndex] = useState(0);
-  const [loadedTypes, setLoadedTypes] = useState<Set<ContentTab>>(new Set(['all']));
 
   const apiUrl = '/api/channels';
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -127,10 +126,10 @@ export default function Player() {
     setError('');
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 60000);
+      const timeout = setTimeout(() => controller.abort(), 25000);
       const targetUrl = `${apiUrl}?type=${requestedType}`;
-      const response = await fetch(targetUrl, { cache: 'no-store', signal: controller.signal });
-      clearTimeout(timeout);
+      const response = await fetch(targetUrl, { cache: 'no-store', signal: controller.signal })
+        .finally(() => clearTimeout(timeout));
       if (!response.ok) {
         const errorRaw = await response.text();
         let errorMessage = 'Falha ao carregar lista do servidor.';
@@ -156,9 +155,11 @@ export default function Player() {
         localStorage.setItem(CHANNEL_CACHE_KEY, JSON.stringify(deduped.slice(0, 5000)));
         return deduped;
       });
-      setLoadedTypes((prev) => new Set(prev).add(requestedType));
     } catch (err: any) {
-      const message = err?.name === 'AbortError' ? 'Timeout ao carregar lista do servidor.' : err.message;
+      const rawMessage = err?.name === 'AbortError' ? 'Timeout ao carregar lista do servidor.' : String(err?.message || '');
+      const message = /operation was aborted|aborterror|aborted/i.test(rawMessage)
+        ? 'A origem da lista não respondeu a tempo (timeout/bloqueio temporário).'
+        : rawMessage;
       setError(`Erro: ${message}. Verifique se sua lista está ativa ou tente novamente.`);
       console.error(err);
     } finally {
@@ -167,12 +168,6 @@ export default function Player() {
   };
 
   const searchNormalized = normalize(searchTerm.trim());
-
-  useEffect(() => {
-    if (activeTab !== 'all' && !loadedTypes.has(activeTab)) {
-      loadChannels(activeTab);
-    }
-  }, [activeTab]);
 
   const filteredChannels = useMemo(() => {
     return channels.filter((channel) => {

@@ -14,9 +14,21 @@ interface XtreamCredentials {
 type RequestedType = 'all' | 'live' | 'movie' | 'series';
 
 const DEFAULT_IPTV_URL =
-  "http://ryzeeng.pro:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
+  "http://rozelds.shop:80/get.php?username=462763&password=322879&type=m3u_plus&output=hls";
+const FALLBACK_IPTV_URL =
+  "http://rozelds.shop:80/get.php?username=462763&password=322879&type=m3u_plus&output=mpegts";
+const LOCKED_SOURCE_URLS = [DEFAULT_IPTV_URL, FALLBACK_IPTV_URL] as const;
+const CHANNEL_CACHE_TTL_MS = 2 * 60 * 1000;
 
 const sanitizeUrl = (value: string) => value.replace(/\n/g, "").replace(/\r/g, "").trim();
+
+type ChannelCacheState = {
+  channels: Channel[];
+  fetchedAt: number;
+};
+
+let cachedAllChannels: ChannelCacheState | null = null;
+let inflightAllChannelsPromise: Promise<Channel[]> | null = null;
 
 function parseM3U(content: string): Channel[] {
   const lines = content.split(/\r?\n/);
@@ -76,26 +88,12 @@ function filterByRequestedType(channels: Channel[], requestedType: RequestedType
 function buildCandidateUrls(rawUrl: string): string[] {
   const cleaned = sanitizeUrl(rawUrl);
   if (!cleaned) return [];
+  return [cleaned];
+}
 
-  const candidates = new Set<string>();
-  try {
-    const parsed = new URL(cleaned.startsWith("http") ? cleaned : `http://${cleaned}`);
-    const output = (parsed.searchParams.get("output") || "").toLowerCase();
-    const outputs = output ? [output, "m3u8", "mpegts"] : ["hls", "m3u8", "mpegts"];
-    const protocols = [parsed.protocol, parsed.protocol === "http:" ? "https:" : "http:"];
-
-    for (const protocol of protocols) {
-      for (const out of outputs) {
-        parsed.protocol = protocol;
-        parsed.searchParams.set("output", out);
-        candidates.add(parsed.toString());
-      }
-    }
-  } catch {
-    candidates.add(cleaned);
-  }
-
-  return [...candidates];
+function parseSourceUrls(input?: string): string[] {
+  void input;
+  return [...LOCKED_SOURCE_URLS];
 }
 
 const isLikelyNotFoundPage = (content: string) => {
@@ -218,16 +216,17 @@ async function buildChannelsFromXtream(rawUrl: string, requestedType: RequestedT
   return channels;
 }
 
-async function resolveChannels(sourceUrl: string, requestedType: RequestedType): Promise<Channel[]> {
-  const candidateUrls = buildCandidateUrls(sourceUrl);
+async function resolveChannels(sourceUrls: string[], requestedType: RequestedType): Promise<Channel[]> {
   let lastError = "Falha ao buscar a lista M3U.";
 
   const fetchCandidate = async (url: string) => {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 12000);
+    const timeout = setTimeout(() => controller.abort(), 15000);
 
+    let response: Response;
+    let responseText: string;
     try {
-      const response = await fetch(url, {
+      response = await fetch(url, {
         signal: controller.signal,
         headers: {
           "User-Agent":
@@ -236,33 +235,42 @@ async function resolveChannels(sourceUrl: string, requestedType: RequestedType):
           "Cache-Control": "no-cache",
         },
       });
-
-      const responseText = await response.text();
-
-      if (!response.ok) {
-        throw new Error(`IPTV Server returned ${response.status} para ${url}`);
+      responseText = await response.text();
+    } catch (error: any) {
+      if (error?.name === "AbortError") {
+        throw new Error(`Timeout ao buscar a lista em ${url}`);
       }
-      if (isLikelyNotFoundPage(responseText)) {
-        throw new Error(`Servidor respondeu NOT_FOUND para ${url}`);
-      }
-      if (!responseText.includes("#EXTM3U")) {
-        throw new Error(`Resposta inválida em ${url} (não retornou M3U).`);
-      }
-
-      const parsedChannels = parseM3U(responseText);
-      const channels = filterByRequestedType(parsedChannels, requestedType);
-
-      if (channels.length > 0) return channels;
-      if (requestedType !== "all" && parsedChannels.length > 0) return parsedChannels;
-
-      throw new Error(`M3U sem itens reproduzíveis em ${url}.`);
+      throw error;
     } finally {
       clearTimeout(timeout);
     }
+
+    if (!response.ok) {
+      throw new Error(`IPTV Server returned ${response.status} para ${url}`);
+    }
+    if (isLikelyNotFoundPage(responseText)) {
+      throw new Error(`Servidor respondeu NOT_FOUND para ${url}`);
+    }
+    if (!responseText.includes("#EXTM3U")) {
+      throw new Error(`Resposta inválida em ${url} (não retornou M3U).`);
+    }
+
+    const parsedChannels = parseM3U(responseText);
+    const channels = filterByRequestedType(parsedChannels, requestedType);
+
+    if (channels.length > 0) return channels;
+    if (requestedType !== "all" && parsedChannels.length > 0) return parsedChannels;
+
+    throw new Error(`M3U sem itens reproduzíveis em ${url}.`);
   };
 
+  const allCandidates = sourceUrls.flatMap((sourceUrl) => buildCandidateUrls(sourceUrl));
+  if (allCandidates.length === 0) {
+    throw new Error("Nenhuma URL de lista válida configurada.");
+  }
+
   try {
-    return await Promise.any(candidateUrls.map((url) => fetchCandidate(url)));
+    return await Promise.any(allCandidates.map((url) => fetchCandidate(url)));
   } catch (error: any) {
     if (error instanceof AggregateError && Array.isArray(error.errors)) {
       const reasons = error.errors
@@ -276,8 +284,33 @@ async function resolveChannels(sourceUrl: string, requestedType: RequestedType):
     }
   }
 
-  console.warn(`M3U falhou: ${lastError}. Tentando Xtream API...`);
-  return buildChannelsFromXtream(sourceUrl, requestedType);
+  throw new Error(lastError);
+}
+
+function isCacheFresh(cache: ChannelCacheState | null) {
+  if (!cache) return false;
+  return Date.now() - cache.fetchedAt <= CHANNEL_CACHE_TTL_MS;
+}
+
+async function resolveAllChannelsWithCache(sourceUrls: string[]): Promise<Channel[]> {
+  if (isCacheFresh(cachedAllChannels)) {
+    return cachedAllChannels!.channels;
+  }
+
+  if (inflightAllChannelsPromise) {
+    return inflightAllChannelsPromise;
+  }
+
+  inflightAllChannelsPromise = resolveChannels(sourceUrls, "all")
+    .then((channels) => {
+      cachedAllChannels = { channels, fetchedAt: Date.now() };
+      return channels;
+    })
+    .finally(() => {
+      inflightAllChannelsPromise = null;
+    });
+
+  return inflightAllChannelsPromise;
 }
 
 export default async function handler(req: any, res: any) {
@@ -300,10 +333,23 @@ export default async function handler(req: any, res: any) {
       ? String(req.query?.type || "all")
       : "all") as RequestedType;
 
-    const sourceUrl = sanitizeUrl(process.env.IPTV_M3U_URL || DEFAULT_IPTV_URL);
-    const channels = await resolveChannels(sourceUrl, requestedType);
+    const sourceUrls = parseSourceUrls(process.env.IPTV_M3U_URL);
+    const allChannels = await resolveAllChannelsWithCache(sourceUrls);
+    const channels = filterByRequestedType(allChannels, requestedType);
     res.status(200).json(channels);
   } catch (error: any) {
+    if (cachedAllChannels?.channels?.length) {
+      const requestedType = (["all", "live", "movie", "series"].includes(String(req.query?.type || "all"))
+        ? String(req.query?.type || "all")
+        : "all") as RequestedType;
+      const fallbackChannels = filterByRequestedType(cachedAllChannels.channels, requestedType);
+      if (fallbackChannels.length > 0) {
+        res.setHeader("X-Cache", "STALE");
+        res.status(200).json(fallbackChannels);
+        return;
+      }
+    }
+
     res.status(500).json({
       error: "Failed to fetch channels",
       details: error?.message || "Erro desconhecido",
